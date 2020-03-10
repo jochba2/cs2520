@@ -1,6 +1,6 @@
 CXX ?= g++
 CXXFLAGS=
-STD=--std=c++98
+STD=--std=c++11
 LIBS=-pthread
 HEADERS=thread.hpp sockets.hpp structures.hpp common.hpp 
 

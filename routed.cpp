@@ -3,6 +3,7 @@
 #include<signal.h>
 #include<unistd.h>
 #include <map>
+#include <vector>
 
 struct IncomingMessage{
     Buffer buffer;
@@ -70,17 +71,115 @@ public:
     }
 }server;
 
-
+// Any thread can pick up the signal, so protect it with a lock
 Monitor monitor;
-bool toExit = false;
+bool exitShowMsgs = false;
 void sig_handler(int signo)
 {
     if (signo == SIGINT){
-        printf("Terminating...\n");
         monitor.lock();
-        toExit = true;
+        exitShowMsgs = true;
         monitor.unlock();
-        monitor.notifyAll();
+    }
+}
+
+void showMsgs() {
+    monitor.lock();
+    exitShowMsgs = false;
+    monitor.unlock();
+
+    std::cout << "Listening to messages... (ctl-c to return to menu)" << std::endl;
+    while (!exitShowMsgs) {
+        //TODO: read from buffer of messages sent/rcvd to print here
+        std::cout << "..." << std::endl;
+    }
+}
+
+typedef struct linkFileRow {
+    linkFileRow(std::string lid, std::string rid, double c) :
+        linkID(lid), destRouterID(rid), linkCost(c) {}
+    std::string linkID;
+    std::string destRouterID;
+    double linkCost;
+} linkFileRow;
+
+void loadLinks(const std::string& linkFile) {
+    std::ifstream linkStream(linkFile.c_str());
+    std::string linkID;
+    std::string destRouterID;
+    double linkCost = 0.0;
+    std::vector<linkFileRow> initLinks;
+
+    while (linkStream >> linkID >> destRouterID >> linkCost) {
+        initLinks.emplace_back(linkID, destRouterID, linkCost);
+    }
+
+    //TODO: Add work queue items to handle the addition of these links
+}
+
+void help(std::string& cmd) {
+    if (cmd == "help") {
+        std::cout << "CLI Usage:";
+        std::cout << "\n\thelp - Print this message";
+        std::cout << "\n\texit - Shut down the router";
+        std::cout << "\n\tscp - Send a file to another router";
+        std::cout << "\n\tset-version - Change the routing protocol version";
+        std::cout << "\n\tset-link - Add/Update/Delete a link on this router";
+        std::cout << "\n\tshow-path - Use this router's table to calculate";
+        std::cout << "the path to anothe router";
+        std::cout << "\n\tshow-msgs - Print the messages sent/rcvd by this router";
+        std::cout << std::endl;
+    } else if (cmd == "help show-msgs") {
+        std::cout << "show-msgs" << std::endl;
+        std::cout << "\n\tPrints a live stream of the messages this router is";
+        std::cout << " or receiving. Use ctl-c to exit to the CLI menu.\n";
+    } else if (cmd == "help scp") {
+        std::cout << "scp <file_name> <destination_ip>" << std::endl;
+        std::cout << "\n\tSends a packetized file from directory <file_dir> over the";
+        std::cout << " router network to another router's directory <file_dir>.\n";
+        std::cout << "\n\t<file_name> - The name of the file in path <file_dir>";
+        std::cout << "\n\t<destination_ip> - The IP of the router to send the file to\n";
+    } else if (cmd == "help set-version") {
+        std::cout << "set-version <version>" << std::endl;
+        std::cout << "\n\tUpdates the routing protocol version on-the-fly.\n";
+        std::cout << "\n\t<version> - (int) The new version to set\n";
+    } else if (cmd == "help set-link") {
+        std::cout << "set-link <link_id> <destination_router_ip> <cost>" << std::endl;
+        std::cout << "\n\tAdds/Updates/Delets a link on this router.\n";
+        std::cout << "\n\t<link_id> - The ID of the link";
+        std::cout << "\n\t<destination_router_ip> - The IP of the router on the other end of the link";
+        std::cout << "\n\t<cost> - (double) The initial cost estimate of this link. Updates automatically\n";
+    } else if (cmd == "help show-path") {
+        std::cout << "show-path <destination_ip>" << std::endl;
+        std::cout << "\n\tCalculates the path to <destination_ip> using this router's";
+        std::cout << " current routing table and displays all hops.\n";
+        std::cout << "\n\t<destination_ip> - IP address of the destination router\n";
+    } else {
+        std::cout << "Unrecognized command" << std::endl;
+    }
+}
+
+void uiLoop() {
+    constexpr char PROMPT[] = "routed> ";
+    std::cout << PROMPT;
+    while (std::cin) {
+        std::string line;
+        std::getline(std::cin, line);
+        if (line.find("help") != std::string::npos)
+            help(line);
+        else if (line.find("exit") != std::string::npos)
+            return;
+        else if (line.find("show-msgs") != std::string::npos)
+            showMsgs();
+        else if (line.find("scp") != std::string::npos)
+            break; //TODO
+        else if (line.find("set-version") != std::string::npos)
+            break; //TODO
+        else if (line.find("set-link") != std::string::npos)
+            break; //TODO
+        else if (line.find("show-path") != std::string::npos)
+            break; //TODO
+        std::cout << PROMPT;
     }
 }
 
@@ -99,6 +198,7 @@ int main(int args, char** argv){
         usage();
         return 1;
     }
+
     std::string routerIP(argv[1]);
     std::string fileDir(argv[2]);
     std::string linkFile;
@@ -113,18 +213,20 @@ int main(int args, char** argv){
             linkFile = argv[i] + 10;
         }
     }
-    std::cout << routerIP << "\n" << fileDir << "\n" << linkFile << "\n" << port << "\n" << corruptMsgs << "\n";
-exit(0);
+
     workerThread.start();
     server.start(port);
     if (signal(SIGINT, sig_handler) == SIG_ERR)
         throw std::runtime_error("Can't register INT signal handler");
-    printf("Router started (%s).\n", getIpByHost("localhost").c_str());
-    monitor.lock();
-    while(!toExit)
-        monitor.wait(1000);
-    monitor.unlock();
+    printf("Router started (%s).\n", routerIP.c_str());
+
+    if (!linkFile.empty())
+        loadLinks(linkFile);
+
+    uiLoop();
+
     server.stop();
     workerThread.stop();
+
     return 0;
 }
