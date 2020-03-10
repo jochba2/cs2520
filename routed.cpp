@@ -84,9 +84,37 @@ void sig_handler(int signo)
     }
 }
 
+void usage() {
+    std::cout << "Usage: ./routed <router_ip> <file_dir> ";
+    std::cout << "[link_list=<file_path>] [port=<int>] [corrupt_msgs]\n\n";
+    std::cout << "<router_ip> - The IP address assigned to this router\n";
+    std::cout << "<file_dir> - Absolute path to the directory to send/recv files\n";
+    std::cout << "[link_list=<file_path>] - Absolute path to a file with links to add to router\n";
+    std::cout << "[port=<int>] - Port to listen on (default: 5678)\n";
+    std::cout << "[corrupt_msgs=<bool>] - 1 to simulate packet and network errors (default: 0)\n";
+}
+
 int main(int args, char** argv){
-    char buffer[65536];
-    unsigned short port = atoi(argv[1]);
+    if (args < 2) {
+        usage();
+        return 1;
+    }
+    std::string routerIP(argv[1]);
+    std::string fileDir(argv[2]);
+    std::string linkFile;
+    unsigned short port = 5678;
+    bool corruptMsgs = false;
+    for (int i = 3; i < args; i++) {
+        if (!strncmp(argv[i], "port=", 5)) {
+            port = atoi(argv[i] + 5);
+        } else if (!strncmp(argv[i], "corrupt_msgs=", 13)) {
+            corruptMsgs = (argv[i][13] == '1');
+        } else if (!strncmp(argv[i], "link_list=", 10)) {
+            linkFile = argv[i] + 10;
+        }
+    }
+    std::cout << routerIP << "\n" << fileDir << "\n" << linkFile << "\n" << port << "\n" << corruptMsgs << "\n";
+exit(0);
     workerThread.start();
     server.start(port);
     if (signal(SIGINT, sig_handler) == SIG_ERR)
