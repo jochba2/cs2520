@@ -44,7 +44,10 @@ CLI Usage:
 routed>
 ```
 
-Note: Hit enter once after the attach command to get the CLI prompt up
+Notes:
+
+* Hit enter once after the attach command to get the CLI prompt up
+* From inside the routed prompt, use `ctl-p ctl-q` to detach back to your shell
 
 You can use the router menu to monitor messages sent/received on this node, send files, and make live changes to the router.
 
