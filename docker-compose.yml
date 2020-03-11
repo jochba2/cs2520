@@ -1,0 +1,34 @@
+version: "3"
+services:
+  routed_10:
+    build: .
+    stdin_open: true
+    tty: true
+    command:
+      - "./routed"
+      - "/file_dir"
+      - "172.16.238.10"
+      - "link_list=/src/links_10.txt"
+      - "corrupt_msgs=1"
+    networks:
+      router-net:
+        ipv4_address: 172.16.238.10
+  routed_20:
+    build: .
+    stdin_open: true
+    tty: true
+    command:
+      - "./routed"
+      - "/file_dir"
+      - "172.16.238.20"
+      - "link_list=/src/links_20.txt"
+      - "corrupt_msgs=1"
+    networks:
+      router-net:
+        ipv4_address: 172.16.238.20
+networks:
+  router-net:
+    ipam:
+      driver: default
+      config:
+        - subnet: "172.16.238.0/24"
