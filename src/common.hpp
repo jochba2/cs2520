@@ -231,7 +231,7 @@ struct Buffer{
 };
 
 struct RouterMessage{
-    unsigned long routerID;
+    std::string routerID;
     int packetType;
     Buffer payload;
     unsigned long checksum;
@@ -253,7 +253,7 @@ struct RouterMessage{
     }
     Buffer getPacket(){
         Buffer acc;
-        acc.write(&routerID, sizeof(routerID));
+        acc.write((char*)routerID.c_str(), routerID.size());
         acc.write(&packetType, sizeof(packetType));
         acc += payload;
         checksum = acc.getCrc();

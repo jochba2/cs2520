@@ -7,6 +7,40 @@
 #include <vector>
 #include <memory>
 
+enum linkState {
+	NEW,
+	ACQUISITION,
+	ALIVE,
+	HELLO_UPDATE,
+	COST_UPDATE
+};
+
+struct LocalLink {
+public:
+	LocalLink() : dest(""), cost(0), helloInt(0), updateInt(0), state(NEW) {}
+	LocalLink(const routerId& rid,
+			  double cost,
+			  unsigned long hello,
+			  unsigned long update)
+		: dest(rid),
+		  cost(cost),
+		  helloInt(hello),
+		  updateInt(update),
+		  state(NEW) {}
+
+	routerId dest;
+	double cost;
+	unsigned long helloInt;
+	unsigned long updateInt;
+	linkState state;
+};
+typedef std::map<std::string, LocalLink> LinkMap;
+LinkMap localLinks;
+
+
+Monitor tableMonitor;
+int version = 1;
+
 struct IncomingMessage{
     Buffer buffer;
     TcpSocket *socket;
@@ -18,7 +52,7 @@ struct RouterMessageHandler{
 
 class WorkerThread : public WorkerService<IncomingMessage>{
 public:
-    WorkerThread(const routerId& id) : _table(id) {
+    WorkerThread(std::shared_ptr<RoutingTable> rt) : _table(rt) {
         /*-------------------- Message Handlers --------------------------*/
 
         struct Handler_1 : public RouterMessageHandler{
@@ -37,8 +71,12 @@ public:
     }
     std::map<int, RouterMessageHandler*> handlers;
 private:
+	std::shared_ptr<RoutingTable> _table;
 
-	RoutingTable _table;
+	// for sending alive and cost messages
+	void intervalTasks() override {
+
+	}
 
     void executeTask(IncomingMessage &item){
         RouterMessage rmsg;
@@ -78,22 +116,16 @@ private:
 	std::shared_ptr<WorkerThread> _worker;
 };
 
-// Any thread can pick up the signal, so protect it with a lock
-Monitor monitor;
-bool exitShowMsgs = false;
-void sig_handler(int signo)
-{
-    if (signo == SIGINT){
-        monitor.lock();
-        exitShowMsgs = true;
-        monitor.unlock();
-    }
-}
-
-
 class UI {
 public:
-	UI(std::shared_ptr<WorkerThread> wt) : _worker(wt) {}
+	UI(const routerId& rid, unsigned short port) {
+		_running = false;
+		_port = port;
+		_table = std::make_shared<RoutingTable>(rid);
+		_worker = std::make_shared<WorkerThread>(_table);
+		_listener.reset(new ConnectionServer(_worker));
+	}
+
 	void loop() {
 		constexpr char PROMPT[] = "routed> ";
 		std::cout << PROMPT;
@@ -101,76 +133,148 @@ public:
 			std::string line;
 			std::getline(std::cin, line);
 			if (line.find("help") != std::string::npos)
-				help(line);
-			else if (line.find("exit") != std::string::npos)
+				_help(line);
+			else if (line.find("exit") != std::string::npos) {
+				_exit();
 				return;
-			else if (line.find("show-msgs") != std::string::npos)
-				showMsgs();
+			} else if (line.find("start") != std::string::npos)
+				_start();
 			else if (line.find("scp") != std::string::npos)
 				break; //TODO
 			else if (line.find("set-version") != std::string::npos)
-				break; //TODO
+				_setVersion(line.substr(11));
 			else if (line.find("set-link") != std::string::npos)
-				break; //TODO
+				_setLink(line.substr(8));
 			else if (line.find("show-path") != std::string::npos)
-				break; //TODO
+				_showPath(line.substr(9));
+			else if (line.find("show-table") != std::string::npos)
+				_showTable();
+			else if(line.size() > 0)
+				std::cout << "Unrecognized command" << std::endl;
 			std::cout << PROMPT;
 		}
 	}
 
-	typedef struct linkFileRow {
-		linkFileRow(std::string lid, std::string rid, double c) :
-			linkID(lid), destRouterID(rid), linkCost(c) {}
-		std::string linkID;
-		std::string destRouterID;
-		double linkCost;
-	} linkFileRow;
-
 	void loadLinks(const std::string& linkFile) {
-		std::ifstream linkStream(linkFile.c_str());
 		std::string linkID;
 		std::string destRouterID;
-		double linkCost = 0.0;
-		std::vector<linkFileRow> initLinks;
-
-		while (linkStream >> linkID >> destRouterID >> linkCost) {
-			initLinks.emplace_back(linkID, destRouterID, linkCost);
+		double cost;
+		unsigned long helloInt;
+		unsigned long updateInt;
+		int count = 0;
+		std::ifstream linkStream(linkFile.c_str());
+		while (linkStream >> linkID >> destRouterID >> cost >> helloInt >> updateInt) {
+			localLinks[linkID] = LocalLink(destRouterID, cost, helloInt, updateInt);
+			count++;
 		}
-
-		//TODO: Add work queue items to handle the addition of these links
+		std::cout << "Loaded " << count << " links at startup.";
 	}
 
 private:
+	bool _running;
+	unsigned short _port;
+	std::shared_ptr<RoutingTable> _table;
 	std::shared_ptr<WorkerThread> _worker;
+	std::unique_ptr<ConnectionServer> _listener;
 
-	void showMsgs() {
-		monitor.lock();
-		exitShowMsgs = false;
-		monitor.unlock();
-
-		std::cout << "Listening to messages... (ctl-c to return to menu)" << std::endl;
-		while (!exitShowMsgs) {
-			//TODO: read from buffer of messages sent/rcvd to print here
-			std::cout << "..." << std::endl;
+	void _setLink(const std::string& cmd) {
+		if (_running) {
+			std::cout << "Cannnot modify state from CLI after calling \"start\"." << std::endl;
+			return;
 		}
+		std::string linkID;
+		std::string destRouterID;
+		double cost;
+		unsigned long helloInt;
+		unsigned long updateInt;
+		std::istringstream iss;
+		iss.str(cmd);
+		if (!(iss >> linkID >> destRouterID >> cost >> helloInt >> updateInt)) {
+			std::cout << "Invalid arguments, type \"help\" for usage." << std::endl;
+			return;
+		}
+		std::cout << "Debug: lid - " << linkID << ", rid - " << destRouterID
+				  << ", cost - " << cost << ", helloInt - " << helloInt
+				  << ", updateInt - " << updateInt << std::endl;
+		if (destRouterID == "0" && cost == 0 && helloInt == 0 && updateInt == 0) {
+			auto i = localLinks.find(linkID);
+			if (i != localLinks.cend())
+				localLinks.erase(i);
+			std::cout << "Deleted link \"" << linkID << "\"." << std::endl;
+			return;
+		} else if (cost == 0 || helloInt == 0 || updateInt == 0) {
+			std::cout << "Invalid arguments, type \"help\" for usage." << std::endl;
+		}
+		LocalLink& l = localLinks[linkID];
+		l.dest = destRouterID;
+		l.cost = cost;
+		l.helloInt = helloInt;
+		l.updateInt = updateInt;
+		std::cout << "Modified link \"" << linkID << "\"." << std::endl;
 	}
 
-	void help(std::string& cmd) {
+	void _setVersion(const std::string& cmd) {
+		if (_running) {
+			std::cout << "Cannnot modify state from CLI after calling \"start\"." << std::endl;
+			return;
+		}
+		int version_in;
+		std::istringstream iss;
+		iss.str(cmd);
+		if (!(iss >> version_in)) {
+			std::cout << "Invalid argument, type \"help\" for usage." << std::endl;
+		}
+		version = version_in;
+		std::cout << "Version set to " << version << "." << std::endl;
+	}
+
+	void _start() {
+		if (_running) {
+			std::cout << "Router is already running." << std::endl;
+			return;
+		}
+		_worker->start();
+		_listener->start(_port);
+		std::cout << "Router v" << version << " started." << std::endl;
+		_running = true;
+	}
+
+	void _exit() {
+		if (_running) {
+			_listener->stop();
+			_worker->stop();
+		}
+		std::cout << "Goodbye." << std::endl;
+	}
+
+	void _showPath(const std::string& cmd) {
+		std::cout << "Path:" << std::endl;
+	}
+
+	void _showTable() {
+		std::cout << "Table:{}" << std::endl;
+	}
+
+	void _help(std::string& cmd) {
 		if (cmd == "help") {
 			std::cout << "CLI Usage:";
 			std::cout << "\n\thelp - Print this message";
 			std::cout << "\n\texit - Shut down the router";
+			std::cout << "\n\tstart - Start communicating with other routers";
 			std::cout << "\n\tscp - Send a file to another router";
 			std::cout << "\n\tset-version - Change the routing protocol version";
 			std::cout << "\n\tset-link - Add/Update/Delete a link on this router";
 			std::cout << "\n\tshow-path - Use this router's table to calculate";
-			std::cout << "the path to anothe router";
-			std::cout << "\n\tshow-msgs - Print the messages sent/rcvd by this router";
+			std::cout << "the path to another router";
+			std::cout << "\n\tshow-table - Print the current routing table";
 			std::cout << std::endl;
-		} else if (cmd == "help show-msgs") {
-			std::cout << "show-msgs" << std::endl;
-			std::cout << "\n\tPrints a live stream of the messages this router is";
-			std::cout << " or receiving. Use ctl-c to exit to the CLI menu.\n";
+		} else if (cmd == "help start") {
+			std::cout << "start" << std::endl;
+			std::cout << "\n\tStart communicating with other routers. Configuration cannot be";
+			std::cout << " changed manually after this point.\n";
+		} else if (cmd == "help show-table") {
+			std::cout << "show-table" << std::endl;
+			std::cout << "\n\tPrints the current routing table.\n";
 		} else if (cmd == "help scp") {
 			std::cout << "scp <file_name> <destination_ip>" << std::endl;
 			std::cout << "\n\tSends a packetized file from directory <file_dir> over the";
@@ -179,14 +283,17 @@ private:
 			std::cout << "\n\t<destination_ip> - The IP of the router to send the file to\n";
 		} else if (cmd == "help set-version") {
 			std::cout << "set-version <version>" << std::endl;
-			std::cout << "\n\tUpdates the routing protocol version on-the-fly.\n";
+			std::cout << "\n\tSets the routing protocol version.\n";
 			std::cout << "\n\t<version> - (int) The new version to set\n";
 		} else if (cmd == "help set-link") {
-			std::cout << "set-link <link_id> <destination_router_ip> <cost>" << std::endl;
-			std::cout << "\n\tAdds/Updates/Delets a link on this router.\n";
+			std::cout << "set-link <link_id> <destination_router_ip> <cost> <hello> <update>" << std::endl;
+			std::cout << "\n\tAdd/Update/Delete a link on this router. All fields are always required.";
+			std::cout << " For delete, set all values besides link_id to 0.\n";
 			std::cout << "\n\t<link_id> - The ID of the link";
 			std::cout << "\n\t<destination_router_ip> - The IP of the router on the other end of the link";
-			std::cout << "\n\t<cost> - (double) The initial cost estimate of this link. Updates automatically\n";
+			std::cout << "\n\t<cost> - (double) The initial cost of the link";
+			std::cout << "\n\t<hello> - (unsigned long) The interval between alive messages (ms)";
+			std::cout << "\n\t<update> - (unsigned long) The interval between updating link cost (ms)\n";
 		} else if (cmd == "help show-path") {
 			std::cout << "show-path <destination_ip>" << std::endl;
 			std::cout << "\n\tCalculates the path to <destination_ip> using this router's";
@@ -200,16 +307,15 @@ private:
 
 void usage() {
     std::cout << "Usage: ./routed <router_ip> <file_dir> ";
-    std::cout << "[link_list=<file_path>] [port=<int>] [corrupt_msgs]\n\n";
-    std::cout << "<router_ip> - The IP address assigned to this router\n";
+    std::cout << "[link_list=<file_path>] [corrupt_msgs]\n\n";
+    std::cout << "<router_ip> - The IP address and ID assigned to this router\n";
     std::cout << "<file_dir> - Absolute path to the directory to send/recv files\n";
     std::cout << "[link_list=<file_path>] - Absolute path to a file with links to add to router\n";
-    std::cout << "[port=<int>] - Port to listen on (default: 5678)\n";
     std::cout << "[corrupt_msgs=<bool>] - 1 to simulate packet and network errors (default: 0)\n";
 }
 
 int main(int args, char** argv){
-    if (args < 2) {
+    if (args < 3 || args > 5) {
         usage();
         return 1;
     }
@@ -220,34 +326,17 @@ int main(int args, char** argv){
     unsigned short port = 5678;
     bool corruptMsgs = false;
     for (int i = 3; i < args; i++) {
-        if (!strncmp(argv[i], "port=", 5)) {
-            port = atoi(argv[i] + 5);
-        } else if (!strncmp(argv[i], "corrupt_msgs=", 13)) {
+        if (!strncmp(argv[i], "corrupt_msgs=", 13)) {
             corruptMsgs = (argv[i][13] == '1');
         } else if (!strncmp(argv[i], "link_list=", 10)) {
             linkFile = argv[i] + 10;
         }
     }
 
-    std::shared_ptr<WorkerThread> wt = std::make_shared<WorkerThread>(routerIP);
-    wt->start();
-
-	ConnectionServer server{wt};
-    server.start(port);
-
-	UI ui{wt};
-
-    if (signal(SIGINT, sig_handler) == SIG_ERR)
-        throw std::runtime_error("Can't register INT signal handler");
-    printf("Router started (%s).\n", routerIP.c_str());
-
+	UI ui{routerIP, port};
     if (!linkFile.empty())
         ui.loadLinks(linkFile);
-
     ui.loop();
-
-    server.stop();
-    wt->stop();
 
     return 0;
 }

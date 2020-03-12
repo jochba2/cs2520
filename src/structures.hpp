@@ -33,8 +33,10 @@ public:
     void execute(){
         monitor.lock();
         while(!toStop()){
-            while(!(requestQueue.size()>0 || toStop()))
+            while(!(requestQueue.size()>0 || toStop())) {
                 monitor.wait(1000);
+				intervalTasks();
+			}
             if(toStop())
                 break;
             while(requestQueue.size()>0){
@@ -57,6 +59,7 @@ public:
         monitor.notify();
     }
 protected:
+	virtual void intervalTasks() = 0;
     virtual void executeTask(T& item)=0;
 private:
     std::list<T> requestQueue;
