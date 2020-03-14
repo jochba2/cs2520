@@ -20,6 +20,8 @@ public:
         _graph[r] = links;
         _updateCostTable();
     }
+    
+    routerId getThis(){return _localRouter;}
 
     routerId nextHop(routerId dest) {
         auto i = _costs.find(dest);

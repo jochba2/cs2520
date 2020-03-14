@@ -240,19 +240,27 @@ struct RouterMessage{
         bool s = true;
         memcpy(&checksum, &(buffer->data[buffer->size-sizeof(checksum)]), sizeof(checksum));
         unsigned long crc = xcrc32 (buffer->data, buffer->size-sizeof(checksum), 0);
-        if(crc!=checksum)
+        if(crc!=checksum){
             return false;
-        s = s && buffer->read(&routerID, sizeof(routerID), index);
+        }
+        size_t l;
+        s = s && buffer->read(&l, sizeof(l), index);
+        char* ridbuf = new char[l+1];
+        s = s && buffer->read(ridbuf, l, index);
+        ridbuf[l] = '\0';
+        routerID.assign(ridbuf);
         s = s && buffer->read(&packetType, sizeof(packetType), index);
         if(s){
             payload.resize(0);
-            payload.resize(buffer->size-sizeof(routerID)-sizeof(packetType)-sizeof(checksum));
+            payload.resize(buffer->size-sizeof(size_t)-routerID.size()-sizeof(packetType)-sizeof(checksum));
             s = s && buffer->read(payload.data, payload.size, index);
         }
         return s;
     }
     Buffer getPacket(){
         Buffer acc;
+        size_t l = routerID.size();
+        acc.write((char*)&l, sizeof(l));
         acc.write((char*)routerID.c_str(), routerID.size());
         acc.write(&packetType, sizeof(packetType));
         acc += payload;

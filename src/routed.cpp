@@ -23,6 +23,47 @@ enum linkState {
 	COST_UPDATE
 };
 
+const unsigned short default_port = 5678;
+
+struct MessageType{
+    static const int BeNeighbor = 1;
+    static const int Alive = 2;
+    static const int LinkCostPing = 3;
+    static const int LSA = 4;
+    static const int FileInit = 5;
+    static const int FileChunk = 6;
+    
+    static const int LinkCostPing_Response = 7;
+    static const int LSA_Response = 8;
+    static const int FileInit_Response = 9;
+    static const int FileChunk_Response = 10;
+
+    static std::string get(int messageType){
+        switch(messageType){
+            case BeNeighbor: return "BeNeighbor";
+            case Alive: return "Alive";
+            case LinkCostPing: return "LinkCostPing";
+            case LSA: return "LSA";
+            case FileInit: return "FileInit";
+            case FileChunk: return "FileChunk";
+
+            case LinkCostPing_Response: return "LinkCostPing_Response";
+            case LSA_Response: return "LSA_Response";
+            case FileInit_Response: return "FileInit_Response";
+            case FileChunk_Response: return "FileChunk_Response";
+
+            default: return "Unknown";
+        }
+    }
+};
+
+class Log{
+public:
+    void write(const std::string& msg){
+        printf("%s\n", msg.c_str());
+    }
+}log;
+
 struct LocalLink {
 public:
 	LocalLink() : dest(""), cost(0), helloInt(0), updateInt(0), state(NEW) {}
@@ -59,6 +100,177 @@ struct RouterMessageHandler{
     virtual void operator()(RouterMessage& message, TcpSocket* socket)=0;
 };
 
+typedef std::pair<routerId, RouterMessage> MessageToPushToDestination;
+
+typedef std::pair<TcpSocket*, RouterMessage> MessageToPush;
+
+// thread that synchrously or asynchnously sends messages
+class MessagePusher : public WorkerService<MessageToPush>{
+public:
+    MessagePusher(bool corruptMsgs) : WorkerService<MessageToPush>(){ _corruptMsgs = corruptMsgs;}
+
+    bool push(const MessageToPushToDestination& item){
+        TcpClient client;
+        client.host = item.first;
+        client.port = default_port;
+        TcpSocket* sock = NULL;
+        try{
+            sock = client.connect();
+            bool result = push(MessageToPush(sock, item.second));
+            delete sock;
+            return result;
+        }catch(std::exception& ex){
+            std::stringstream msg;
+            msg << MessageType::get(item.second.packetType) << std::string(" packet connection to ") << item.first << std::string(" error");
+            log.write(msg.str());
+            if(sock)
+                delete sock;
+        }
+        return false;
+    }
+    
+    bool push(MessageToPush item){
+        Buffer packet = item.second.getPacket();
+        if(_corruptMsgs){
+            if(rand()%1000 < 50){
+                std::stringstream msg;
+                msg << MessageType::get(item.second.packetType) << std::string(" packet lost");
+                log.write(msg.str());
+                return true; // lost packet
+            }
+            if(rand()%1000 < 100){
+                std::stringstream msg;
+                msg << MessageType::get(item.second.packetType) << std::string(" packet injecting error");
+                log.write(msg.str());
+                packet.injectErrors(1); // bit flip
+            }
+        }
+        TcpSocket* sock = item.first;
+        try{
+            sock->writeData((char*)packet.data, packet.size);
+            sock->sendEOF();
+            int response;
+            if(sock->readMsg(response)){
+                switch(response){
+                    case 0: // message accepted
+                        log.write(std::string("Message sent"));
+                    break;
+                    case 1: // unknown packet type
+                    {
+                        std::stringstream msg;
+                        msg << MessageType::get(item.second.packetType) << std::string(" packet unrecognized");
+                        log.write(msg.str());
+                    }
+                    break;
+                    case 2: // data integrity error
+                    {
+                        std::stringstream msg;
+                        msg << MessageType::get(item.second.packetType) << std::string(" packet corrupted. Retrying...");
+                        log.write(msg.str());
+                        return push(item);
+                    }
+                    break;
+                    default:
+                    break;
+                }
+            }
+            return response==0;
+        }catch(std::exception& ex){
+            std::stringstream msg;
+            msg << MessageType::get(item.second.packetType) << std::string(" packet connection to ") << item.first->host << std::string(" error");
+            log.write(msg.str());
+        }
+        return false;
+    }
+
+    void schedule(const MessageToPushToDestination& item){
+        TcpClient client;
+        client.host = item.first;
+        client.port = default_port;
+        TcpSocket* sock = NULL;
+        try{
+            sock = client.connect();
+            WorkerService<MessageToPush>::schedule(MessageToPush(sock, item.second));
+            return;
+        }catch(std::exception& ex){
+            std::stringstream msg;
+            msg << MessageType::get(item.second.packetType) << std::string(" packet connection to ") << item.first << std::string(" error");
+            log.write(msg.str());
+            
+            if(sock)
+                delete sock;
+        }
+    }
+
+private:
+    bool _corruptMsgs;
+    
+    void executeTask(MessageToPush& item){
+        Buffer packet = item.second.getPacket();
+        if(_corruptMsgs){
+            if(rand()%1000 < 50){ // 5% probability
+                std::stringstream msg;
+                msg << MessageType::get(item.second.packetType) << std::string(" packet lost");
+                log.write(msg.str());
+                return; // lost packet
+            }
+            if(rand()%1000 < 100){ // 10% probability
+                std::stringstream msg;
+                msg << MessageType::get(item.second.packetType) << std::string(" packet injecting error");
+                log.write(msg.str());
+                packet.injectErrors(1); // bit flip
+            }
+        }
+        TcpSocket* sock = item.first;
+        try{
+            sock->writeData((char*)packet.data, packet.size);
+            sock->sendEOF();
+            int response;
+            if(sock->readMsg(response)){
+                switch(response){
+                    case 0: // message accepted
+                        log.write(std::string("Message sent"));
+                    break;
+                    case 1: // unknown packet type
+                    {
+                        std::stringstream msg;
+                        msg << MessageType::get(item.second.packetType) << std::string(" packet unrecognized");
+                        log.write(msg.str());
+                    }
+                    break;
+                    case 2: // data integrity error
+                    {
+                        std::stringstream msg;
+                        msg << MessageType::get(item.second.packetType) << std::string(" packet corrupted. Retrying...");
+                        log.write(msg.str());
+                        WorkerService<MessageToPush>::schedule(MessageToPush(item.first, item.second));
+                        return;
+                    }
+                    break;
+                    default:
+                    break;
+                }
+            }
+            delete sock;
+            return;
+        }catch(std::exception& ex){
+            std::stringstream msg;
+            msg << MessageType::get(item.second.packetType) << std::string(" packet connection to ") << item.first << std::string(" error");
+            log.write(msg.str());
+            
+            if(sock)
+                delete sock;
+        }
+    }
+    
+    void intervalTasks() override {
+    }
+};
+
+
+
+
+
 class WorkerThread : public WorkerService<IncomingMessage>{
 public:
     WorkerThread(std::shared_ptr<RoutingTable> rt) : _table(rt) {
@@ -74,32 +286,32 @@ public:
 		 */
         struct HandleBeNeighbor : public RouterMessageHandler{
             void operator()(RouterMessage& message, TcpSocket* socket){
-                printf("Success (%i, %i, %s)\n", message.routerID, message.packetType, message.payload.data);
+                printf("Success (%s, %i, %s)\n", message.routerID.c_str(), message.packetType, message.payload.data);
             }
         };
 		struct HandleAlive : public RouterMessageHandler {
             void operator()(RouterMessage& message, TcpSocket* socket){
-                printf("Success (%i, %i, %s)\n", message.routerID, message.packetType, message.payload.data);
+                printf("Success (%s, %i, %s)\n", message.routerID.c_str(), message.packetType, message.payload.data);
             }
         };
         struct HandleLinkCostPing : public RouterMessageHandler{
             void operator()(RouterMessage& message, TcpSocket* socket){
-                printf("Success (%i, %i, %s)\n", message.routerID, message.packetType, message.payload.data);
+                printf("Success (%s, %i, %s)\n", message.routerID.c_str(), message.packetType, message.payload.data);
             }
         };
 		struct HandleLSA : public RouterMessageHandler {
             void operator()(RouterMessage& message, TcpSocket* socket){
-                printf("Success (%i, %i, %s)\n", message.routerID, message.packetType, message.payload.data);
+                printf("Success (%s, %i, %s)\n", message.routerID.c_str(), message.packetType, message.payload.data);
             }
         };
         struct HandleFileInit : public RouterMessageHandler{
             void operator()(RouterMessage& message, TcpSocket* socket){
-                printf("Success (%i, %i, %s)\n", message.routerID, message.packetType, message.payload.data);
+                printf("Success (%s, %i, %s)\n", message.routerID.c_str(), message.packetType, message.payload.data);
             }
         };
 		struct HandleFileChunk : public RouterMessageHandler {
             void operator()(RouterMessage& message, TcpSocket* socket){
-                printf("Success (%i, %i, %s)\n", message.routerID, message.packetType, message.payload.data);
+                printf("Success (%s, %i, %s)\n", message.routerID.c_str(), message.packetType, message.payload.data);
             }
         };
 
@@ -111,22 +323,22 @@ public:
 		 */
         struct HandleBeNeighborResp : public RouterMessageHandler{
             void operator()(RouterMessage& message, TcpSocket* socket){
-                printf("Success (%i, %i, %s)\n", message.routerID, message.packetType, message.payload.data);
+                printf("Success (%s, %i, %s)\n", message.routerID.c_str(), message.packetType, message.payload.data);
             }
         };
 		struct HandleAliveResp : public RouterMessageHandler {
             void operator()(RouterMessage& message, TcpSocket* socket){
-                printf("Success (%i, %i, %s)\n", message.routerID, message.packetType, message.payload.data);
+                printf("Success (%s, %i, %s)\n", message.routerID.c_str(), message.packetType, message.payload.data);
             }
         };
         struct HandleLinkCostPong : public RouterMessageHandler{
             void operator()(RouterMessage& message, TcpSocket* socket){
-                printf("Success (%i, %i, %s)\n", message.routerID, message.packetType, message.payload.data);
+                printf("Success (%s, %i, %s)\n", message.routerID.c_str(), message.packetType, message.payload.data);
             }
         };
 		struct HandleFileAck : public RouterMessageHandler {
             void operator()(RouterMessage& message, TcpSocket* socket){
-                printf("Success (%i, %i, %s)\n", message.routerID, message.packetType, message.payload.data);
+                printf("Success (%s, %i, %s)\n", message.routerID.c_str(), message.packetType, message.payload.data);
             }
         };
 
@@ -178,17 +390,27 @@ private:
 
     void executeTask(IncomingMessage& item){
 		RouterMessage rmsg;
+        rmsg.routerID = item.socket->host;
+        int response = 0;
         if(rmsg.readFrom(&item.buffer)){
             if(handlers.find(rmsg.packetType)!=handlers.end()){
+                std::stringstream msg;
+                msg << std::string("Received ") << MessageType::get(rmsg.packetType) << std::string(" packet from ") << rmsg.routerID;
+                log.write(msg.str());
                 (*handlers[rmsg.packetType])(rmsg, item.socket);
+                response = 0;
             } else {
-                printf("Unknown packet\n");
+                response = 1;
+                log.write(std::string("Received unrecognized packet"));
             }
         } else {
-            printf("Integrity error\n");
+            response = 2;
+            log.write(std::string("Received corrupt packet"));
         }
+        
+        item.socket->writeMsg(response);
 
-        TextMessage response;
+        /*TextMessage response;
         response.text = "Hello world!";
         bool s = true;
         if(s){
@@ -196,7 +418,7 @@ private:
             if(s){
                 printf("Replied\n");
             }
-        }
+        }*/
         delete item.socket;
     }
 };
@@ -221,6 +443,7 @@ public:
 		_port = port;
 		_table = std::make_shared<RoutingTable>(rid);
 		_worker = std::make_shared<WorkerThread>(_table);
+        _messagePusher = std::make_shared<MessagePusher>(true);
 		_listener.reset(new ConnectionServer(_worker));
 	}
 
@@ -238,7 +461,27 @@ public:
 			} else if (line.find("start") != std::string::npos)
 				_start();
 			else if (line.find("scp") != std::string::npos)
-				break; //TODO
+            {
+                // --------------------- TEST ---------------------
+                std::string destination;
+                std::istringstream iss;
+                iss.str(line.substr(3));
+                if (!(iss >> destination)) {
+                    std::cout << "Invalid arguments, type \"help\" for usage." << std::endl;
+                    continue;
+                }
+                printf("Sending FileInit message to %s ...\n", destination.c_str());
+                
+                RouterMessage msg;
+                msg.routerID = _table->getThis();
+                msg.packetType = MessageType::FileInit;
+                std::string s = "FILE_DATA";
+                size_t len = s.size();
+                msg.payload.write((char*)s.c_str(), len+1);
+                _messagePusher->schedule(MessageToPushToDestination(destination, msg));
+                // --------------------- /TEST ---------------------
+				//break; //TODO
+            }
 			else if (line.find("set-version") != std::string::npos)
 				_setVersion(line.substr(11));
 			else if (line.find("set-link") != std::string::npos)
@@ -273,6 +516,7 @@ private:
 	unsigned short _port;
 	std::shared_ptr<RoutingTable> _table;
 	std::shared_ptr<WorkerThread> _worker;
+    std::shared_ptr<MessagePusher> _messagePusher;
 	std::unique_ptr<ConnectionServer> _listener;
 
 	void _setLink(const std::string& cmd) {
@@ -333,6 +577,7 @@ private:
 		}
 		//TODO: insert links into table
 		_worker->start();
+        _messagePusher->start();
 		_listener->start(_port);
 		std::cout << "Router v" << version << " started." << std::endl;
 		_running = true;
@@ -342,6 +587,7 @@ private:
 		if (_running) {
 			_listener->stop();
 			_worker->stop();
+            _messagePusher->stop();
 		}
 		std::cout << "Goodbye." << std::endl;
 	}
@@ -422,7 +668,7 @@ int main(int args, char** argv){
     std::string routerIP(argv[1]);
     std::string fileDir(argv[2]);
     std::string linkFile;
-    unsigned short port = 5678;
+    unsigned short port = default_port;
     bool corruptMsgs = false;
     for (int i = 3; i < args; i++) {
         if (!strncmp(argv[i], "corrupt_msgs=", 13)) {
