@@ -56,6 +56,7 @@ public:
     inline int readData(char* data, int len);
     inline int writeData(char* data, int len);
     inline bool sendEOF();
+    inline bool isReadClosed(){return readFinished;};
 
 private:
     TcpSocket(int sockfd) : sockfd(sockfd), readFinished(false), writeFinished(false){};
@@ -272,7 +273,7 @@ inline bool TcpSocket::sendEOF(){
         err = err + erno;
         throw std::runtime_error(err.c_str());
     }
-    return n;
+    return n==0;
 }
 
 #endif /* _SOCKETS_HPP */

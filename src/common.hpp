@@ -183,7 +183,7 @@ struct Buffer{
         }
         this->size = size;
     }
-    void write(void* data, size_t len){
+    void write(const void* data, size_t len){
         if(len==0)
             return;
         resize(this->size+len);
@@ -193,7 +193,7 @@ struct Buffer{
     bool read(void* data, size_t len, int& index){
         if(len==0)
             return true;
-        if(index+len>=size)
+        if(index+len>size)
             return false;
         memcpy(data, &(this->data[index]), len);
         index += len;
@@ -234,8 +234,8 @@ struct RouterMessage{
     std::string routerID;
     int packetType;
     Buffer payload;
-    unsigned long checksum;
     bool readFrom(Buffer* buffer){
+        unsigned long checksum;
         int index=0;
         bool s = true;
         memcpy(&checksum, &(buffer->data[buffer->size-sizeof(checksum)]), sizeof(checksum));
@@ -257,7 +257,8 @@ struct RouterMessage{
         }
         return s;
     }
-    Buffer getPacket(){
+    Buffer getPacket()const{
+        unsigned long checksum;
         Buffer acc;
         size_t l = routerID.size();
         acc.write((char*)&l, sizeof(l));
@@ -267,6 +268,26 @@ struct RouterMessage{
         checksum = acc.getCrc();
         acc.write(&checksum, sizeof(checksum));
         return acc;
+    }
+    unsigned long getSessionID(){
+        int index=0;
+        bool s = true;
+        unsigned long sessionID=0;
+        s = s && payload.read(&sessionID, sizeof(sessionID), index);
+        if(s){
+            Buffer newPayload;
+            newPayload.resize(0);
+            newPayload.resize(payload.size-sizeof(sessionID));
+            s = s && payload.read(newPayload.data, newPayload.size, index);
+            payload = newPayload;
+            return sessionID;
+        }        
+    }
+    void addSessionID(unsigned long sessionID){
+        Buffer acc;
+        acc.write(&sessionID, sizeof(sessionID));
+        acc += payload;
+        payload = acc;
     }
 };
 
