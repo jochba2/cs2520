@@ -24,18 +24,22 @@ enum linkState {
 
 const unsigned short default_port = 5678;
 
-struct MessageType{
+namespace MessageType{
     static const int BeNeighbor = 1;
     static const int Alive = 2;
     static const int LinkCostPing = 3;
     static const int LSA = 4;
     static const int FileInit = 5;
     static const int FileChunk = 6;
+    static const int FileAck = 7;
     
-    static const int LinkCostPing_Response = 7;
-    static const int LSA_Response = 8;
-    static const int FileInit_Response = 9;
-    static const int FileChunk_Response = 10;
+    static const int BeNeighbor_Response = 8;
+    static const int Alive_Response = 9;
+    static const int LinkCostPing_Response = 10;
+    static const int LSA_Response = 11;
+    static const int FileInit_Response = 12;
+    static const int FileChunk_Response = 13;
+    static const int FileAck_Response = 14;
 
     static std::string get(int messageType){
         switch(messageType){
@@ -45,11 +49,15 @@ struct MessageType{
             case LSA: return "LSA";
             case FileInit: return "FileInit";
             case FileChunk: return "FileChunk";
+            case FileAck: return "FileAck";
 
+            case BeNeighbor_Response: return "BeNeighbor_Response";
+            case Alive_Response: return "Alive_Response";
             case LinkCostPing_Response: return "LinkCostPing_Response";
             case LSA_Response: return "LSA_Response";
             case FileInit_Response: return "FileInit_Response";
             case FileChunk_Response: return "FileChunk_Response";
+            case FileAck_Response: return "FileAck_Response";
 
             default: return "Unknown";
         }
@@ -96,6 +104,9 @@ public:
     unsigned long helloInt;
     unsigned long updateInt;
     linkState state;
+    Stopwatch helloInterval, helloSent;
+    Stopwatch updateInterval, updateSent;
+    Stopwatch BeNeighborSent, updateIntEnd;
 };
 typedef std::map<std::string, LocalLink> LinkMap;
 LinkMap localLinks;
@@ -103,7 +114,6 @@ LinkMap localLinks;
 
 Monitor tableMonitor;
 int version = 1;
-
 
 struct IncomingMessage {
     Buffer buffer;
@@ -137,7 +147,7 @@ public:
             }
         }catch(std::exception& ex){
             std::stringstream msg;
-            msg << MessageType::get(item.second.packetType) << std::string(" packet connection to ") << item.first << std::string(" error");
+            msg << MessageType::get(item.second.packetType) << std::string(" packet connection to ") << item.first << std::string(" error ") << ex.what();
             logger.write(msg.str());
             if(sock)
                 delete sock;
@@ -168,7 +178,7 @@ public:
             }
         }catch(std::exception& ex){
             std::stringstream msg;
-            msg << MessageType::get(item.second.packetType) << std::string(" packet connection to ") << item.first << std::string(" error");
+            msg << MessageType::get(item.second.packetType) << std::string(" packet connection to ") << item.first << std::string(" error ") << ex.what();
             logger.write(msg.str());
             //if(sock)
                 //delete sock;
@@ -251,7 +261,7 @@ private:
             return 0;
         }catch(std::exception& ex){
             std::stringstream m;
-            m << MessageType::get(msg.packetType) << std::string(" packet transfer to ") << sock->host << std::string(" error");
+            m << MessageType::get(msg.packetType) << std::string(" packet transfer to ") << sock->host << std::string(" error ") << ex.what();
             logger.write(m.str());
             return 3;
         }
@@ -274,7 +284,7 @@ private:
             }
         }catch(std::exception& ex){
             std::stringstream msg;
-            msg << MessageType::get(item.second.packetType) << std::string(" packet connection to ") << item.first << std::string(" error");
+            msg << MessageType::get(item.second.packetType) << std::string(" packet connection to ") << item.first << std::string(" error ") << ex.what();
             logger.write(msg.str());
             if(sock)
                 delete sock;
@@ -289,6 +299,7 @@ private:
 
 std::shared_ptr<MessagePusher> thisMessagePusher;
 
+std::shared_ptr<RoutingTable> thisTable;
 
 
 class WorkerThread : public WorkerService<IncomingMessage>{
@@ -311,7 +322,10 @@ public:
         };
         struct HandleAlive : public RouterMessageHandler {
             void operator()(RouterMessage& message, TcpSocket* socket){
-                printf("Success (%s, %i, %s)\n", message.routerID.c_str(), message.packetType, message.payload.data);
+                RouterMessage msg;
+                msg.routerID = thisTable->getThis();
+                msg.packetType = MessageType::Alive_Response;
+                thisMessagePusher->schedule(MessageToPush(message.routerID, msg));
             }
         };
         struct HandleLinkCostPing : public RouterMessageHandler{
@@ -329,9 +343,9 @@ public:
                 unsigned long sessionID = message.getSessionID();
                 printf("Success (%s, %i, %s)\n", message.routerID.c_str(), sessionID, message.payload.data);
                 RouterMessage msg;
-                msg.routerID = getIpByHost("localhost");//_table->getThis();
+                msg.routerID = thisTable->getThis();
                 msg.packetType = MessageType::FileChunk;
-                std::string s = "FILE_ACK";
+                std::string s = "FILE_CHUNK";
                 size_t len = s.size();
                 msg.payload.write((char*)s.c_str(), len+1);
                 msg.addSessionID(sessionID);
@@ -346,45 +360,71 @@ public:
                 sessionManager.retireSessionID(sessionID);
             }
         };
+		struct HandleFileAck : public RouterMessageHandler {
+            void operator()(RouterMessage& message, TcpSocket* socket){
+                unsigned long sessionID = message.getSessionID();
+                printf("Success (%s, %i, %s)\n", message.routerID.c_str(), sessionID, message.payload.data);
+                sessionManager.retireSessionID(sessionID);
+            }
+        };
+        
+		/* Messages we respond with:
+		 * 1. Be_Neighbor_Response
+		 * 2. Alive_Response
+		 * 3. Link_Cost_Pong
+		 * 4. FileAck
+		 */
+        struct HandleBeNeighbor_Response : public RouterMessageHandler{
+            void operator()(RouterMessage& message, TcpSocket* socket){
+                printf("Success (%s, %i, %s)\n", message.routerID.c_str(), message.packetType, message.payload.data);
+            }
+        };
+		struct HandleAlive_Response : public RouterMessageHandler {
+            void operator()(RouterMessage& message, TcpSocket* socket){
+                printf("Success (%s, %i, %s)\n", message.routerID.c_str(), message.packetType, message.payload.data);
+            }
+        };
+        struct HandleLinkCostPing_Response : public RouterMessageHandler{
+            void operator()(RouterMessage& message, TcpSocket* socket){
+                printf("Success (%s, %i, %s)\n", message.routerID.c_str(), message.packetType, message.payload.data);
+            }
+        };
+		struct HandleLSA_Response : public RouterMessageHandler {
+            void operator()(RouterMessage& message, TcpSocket* socket){
+                printf("Success (%s, %i, %s)\n", message.routerID.c_str(), message.packetType, message.payload.data);
+            }
+        };
+		struct HandleFileInit_Response : public RouterMessageHandler {
+            void operator()(RouterMessage& message, TcpSocket* socket){
+                printf("Success (%s, %i, %s)\n", message.routerID.c_str(), message.packetType, message.payload.data);
+            }
+        };
+		struct HandleFileChunk_Response : public RouterMessageHandler {
+            void operator()(RouterMessage& message, TcpSocket* socket){
+                printf("Success (%s, %i, %s)\n", message.routerID.c_str(), message.packetType, message.payload.data);
+            }
+        };
+		struct HandleFileAck_Response : public RouterMessageHandler {
+            void operator()(RouterMessage& message, TcpSocket* socket){
+                printf("Success (%s, %i, %s)\n", message.routerID.c_str(), message.packetType, message.payload.data);
+            }
+        };
 
-        /* Messages we respond with:
-         * 1. Be_Neighbor_Response
-         * 2. Alive_Response
-         * 3. Link_Cost_Pong
-         * 4. FileAck
-         */
-        struct HandleBeNeighborResp : public RouterMessageHandler{
-            void operator()(RouterMessage& message, TcpSocket* socket){
-                printf("Success (%s, %i, %s)\n", message.routerID.c_str(), message.packetType, message.payload.data);
-            }
-        };
-        struct HandleAliveResp : public RouterMessageHandler {
-            void operator()(RouterMessage& message, TcpSocket* socket){
-                printf("Success (%s, %i, %s)\n", message.routerID.c_str(), message.packetType, message.payload.data);
-            }
-        };
-        struct HandleLinkCostPong : public RouterMessageHandler{
-            void operator()(RouterMessage& message, TcpSocket* socket){
-                printf("Success (%s, %i, %s)\n", message.routerID.c_str(), message.packetType, message.payload.data);
-            }
-        };
-        struct HandleFileAck : public RouterMessageHandler {
-            void operator()(RouterMessage& message, TcpSocket* socket){
-                printf("Success (%s, %i, %s)\n", message.routerID.c_str(), message.packetType, message.payload.data);
-            }
-        };
-
-        handlers.insert(std::pair<int, RouterMessageHandler*>(1, new HandleBeNeighbor()));
-        handlers.insert(std::pair<int, RouterMessageHandler*>(2, new HandleAlive()));
-        handlers.insert(std::pair<int, RouterMessageHandler*>(3, new HandleLinkCostPing()));
-        handlers.insert(std::pair<int, RouterMessageHandler*>(4, new HandleLSA()));
-        handlers.insert(std::pair<int, RouterMessageHandler*>(5, new HandleFileInit()));
-        handlers.insert(std::pair<int, RouterMessageHandler*>(6, new HandleFileChunk()));
-
-        handlers.insert(std::pair<int, RouterMessageHandler*>(7, new HandleLinkCostPing()));
-        handlers.insert(std::pair<int, RouterMessageHandler*>(8, new HandleLSA()));
-        handlers.insert(std::pair<int, RouterMessageHandler*>(9, new HandleFileInit()));
-        handlers.insert(std::pair<int, RouterMessageHandler*>(10, new HandleFileChunk()));
+        handlers.insert(std::pair<int, RouterMessageHandler*>(MessageType::BeNeighbor, new HandleBeNeighbor()));
+        handlers.insert(std::pair<int, RouterMessageHandler*>(MessageType::Alive, new HandleAlive()));
+        handlers.insert(std::pair<int, RouterMessageHandler*>(MessageType::LinkCostPing, new HandleLinkCostPing()));
+        handlers.insert(std::pair<int, RouterMessageHandler*>(MessageType::LSA, new HandleLSA()));
+        handlers.insert(std::pair<int, RouterMessageHandler*>(MessageType::FileInit, new HandleFileInit()));
+        handlers.insert(std::pair<int, RouterMessageHandler*>(MessageType::FileChunk, new HandleFileChunk()));
+        handlers.insert(std::pair<int, RouterMessageHandler*>(MessageType::FileAck, new HandleFileAck()));
+		
+        handlers.insert(std::pair<int, RouterMessageHandler*>(MessageType::BeNeighbor_Response, new HandleBeNeighbor_Response()));
+        handlers.insert(std::pair<int, RouterMessageHandler*>(MessageType::Alive_Response, new HandleAlive_Response()));
+        handlers.insert(std::pair<int, RouterMessageHandler*>(MessageType::LinkCostPing_Response, new HandleLinkCostPing_Response()));
+        handlers.insert(std::pair<int, RouterMessageHandler*>(MessageType::LSA_Response, new HandleLSA_Response()));
+        handlers.insert(std::pair<int, RouterMessageHandler*>(MessageType::FileInit_Response, new HandleFileInit_Response()));
+        handlers.insert(std::pair<int, RouterMessageHandler*>(MessageType::FileChunk_Response, new HandleFileChunk_Response()));
+        handlers.insert(std::pair<int, RouterMessageHandler*>(MessageType::FileAck_Response, new HandleFileAck_Response()));
         /*-------------------- Message Handlers --------------------------*/
     }
     ~WorkerThread(){
@@ -394,31 +434,51 @@ public:
     }
     std::map<int, RouterMessageHandler*> handlers;
 private:
-    std::shared_ptr<RoutingTable> _table;
+	std::shared_ptr<RoutingTable> _table;
 
-    // for sending link association, alive, and cost messages
-    // also for retransmitting unacked file chunks
-    void intervalTasks() override {
-        // for each localLink():
-        //   switch(linkState) {
-        //   case NEW:
-        //   case DEAD:
-        //     send Be_Neighbor_Request for each link
-        //     advance link state machine for each link
-        //   case ACQUISITION:
-        //     if (time > BeNeighborSent) { advanceState(DEAD); }
-        //   case ALIVE:
-        //     if (time > helloInterval) { sendHello(); advanceState(HELLO_UPDATE) }
-        //     if (time > updateInterval) { sendPing(); advanceState(COST_UPDATE) }
-        //   case HELLO_UPDATE:
-        //     if (time > helloSent) { advanceState(DEAD); }
-        //   case COST_UPDATE:
-        //     if (time > updateIntEnd) { recomputeCost(link); updateTable(); sendLSA(); }
-        //   }
-        //
-        // for each outgoingFile():
-        //   if (time > ackInterval) { resendFileChunks(); }
-    }
+	// for sending link association, alive, and cost messages
+	// also for retransmitting unacked file chunks
+	void intervalTasks() override {
+        for(auto& ll : localLinks){
+            LocalLink& link = ll.second;
+            std::string& dest = link.dest;
+            if(link.helloInterval.elapsed()>link.helloInt){
+                RouterMessage msg;
+                msg.routerID = thisTable->getThis();
+                msg.packetType = MessageType::Alive;
+                thisMessagePusher->schedule(MessageToPush(dest, msg));
+                link.helloInterval.start();
+                link.helloSent.start();
+            }
+            if(link.updateInterval.elapsed()>link.updateInt){
+                RouterMessage msg;
+                msg.routerID = thisTable->getThis();
+                msg.packetType = MessageType::Alive;
+                thisMessagePusher->schedule(MessageToPush(dest, msg));
+                link.updateInterval.start();
+                link.updateSent.start();
+            }
+        }
+		// for each localLink():
+		//   switch(linkState) {
+		//   case NEW:
+		//   case DEAD:
+		//     send Be_Neighbor_Request for each link
+		//     advance link state machine for each link
+		//   case ACQUISITION:
+		//     if (time > BeNeighborSent) { advanceState(DEAD); }
+		//   case ALIVE:
+		//     if (time > helloInterval) { sendHello(); advanceState(HELLO_UPDATE) }
+		//     if (time > updateInterval) { sendPing(); advanceState(COST_UPDATE) }
+		//   case HELLO_UPDATE:
+		//     if (time > helloSent) { advanceState(DEAD); }
+		//   case COST_UPDATE:
+		//     if (time > updateIntEnd) { recomputeCost(link); updateTable(); sendLSA(); }
+		//   }
+		//
+		// for each outgoingFile():
+		//   if (time > ackInterval) { resendFileChunks(); }
+	}
 
     void executeTask(IncomingMessage& item){
         RouterMessage rmsg;
@@ -457,6 +517,7 @@ private:
 
 std::shared_ptr<WorkerThread> thisWorker;
 
+
 class ConnectionServer : public TcpThreadedServer{
 public:
     ConnectionServer(std::shared_ptr<WorkerThread> wt) : _worker(wt) {}
@@ -480,6 +541,7 @@ public:
         _messagePusher = std::make_shared<MessagePusher>(true);
         thisWorker = _worker;
         thisMessagePusher = _messagePusher;
+        thisTable = _table;
         _listener.reset(new ConnectionServer(_worker));
     }
 

@@ -21,8 +21,25 @@
 #include <iostream>
 #include <fstream>
 #include <sstream>
+#include <time.h>
 
 #include "thread.hpp"
+
+class Stopwatch{
+public:
+    Stopwatch(){start();}
+    void start(){
+        clock_gettime(CLOCK_REALTIME, &_abstime);
+    }
+    unsigned int elapsed(){
+        timespec t;
+        clock_gettime(CLOCK_REALTIME, &t);
+        return (t.tv_sec - _abstime.tv_sec)*1000 + (t.tv_nsec - _abstime.tv_nsec)/1000000;
+    }
+private:
+    timespec _abstime;
+   
+};
 
 // Worker thread
 // override executeTask to set item processing

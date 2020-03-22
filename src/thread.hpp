@@ -42,8 +42,9 @@ public:
 	}
 	bool wait(int timeout){
 		timespec abstime;
-		abstime.tv_sec = time(NULL) + timeout;
-		abstime.tv_nsec = 0;
+        clock_gettime(CLOCK_REALTIME, &abstime);
+        abstime.tv_sec += timeout / 1000;
+		abstime.tv_nsec += (timeout%1000)*1000000;
 		int ret = pthread_cond_timedwait(&condition_variable, &mutex, &abstime);
 		return ret != ETIMEDOUT;
 	}
