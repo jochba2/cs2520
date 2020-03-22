@@ -6,8 +6,8 @@ services:
     tty: true
     command:
       - "./routed"
-      - "/file_dir"
       - "172.16.238.10"
+      - "/file_dir"
       - "link_list=/src/links_10.txt"
       - "corrupt_msgs=1"
     networks:
@@ -19,8 +19,8 @@ services:
     tty: true
     command:
       - "./routed"
-      - "/file_dir"
       - "172.16.238.20"
+      - "/file_dir"
       - "link_list=/src/links_20.txt"
       - "corrupt_msgs=1"
     networks:

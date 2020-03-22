@@ -281,7 +281,8 @@ struct RouterMessage{
             s = s && payload.read(newPayload.data, newPayload.size, index);
             payload = newPayload;
             return sessionID;
-        }        
+        }
+        return 0;
     }
     void addSessionID(unsigned long sessionID){
         Buffer acc;

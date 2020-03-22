@@ -5,6 +5,7 @@
 #include <string>
 #include <vector>
 #include <set>
+#include <iostream>
 
 typedef std::string routerId;                     // "ip_addr"
 typedef std::pair<routerId, double> linkWeight;   // ("src", "weight")
@@ -20,7 +21,7 @@ public:
         _graph[r] = links;
         _updateCostTable();
     }
-    
+
     routerId getThis(){return _localRouter;}
 
     routerId nextHop(routerId dest) {
@@ -29,10 +30,46 @@ public:
             dest = i->second.first;
             i = _costs.find(dest);
         }
-        if (_costs.find(dest) != _costs.end()) {
+        if (i != _costs.end()) {
             return dest;
         }
         return routerId();
+    }
+
+    const std::string printRoute(routerId dest) {
+        std::list<linkWeight> path;
+        auto i = _costs.find(dest);
+        while (i != _costs.cend() && _localRouter != i->second.first) {
+            path.push_front(linkWeight(dest, i->second.second));
+            dest = i->second.first;
+            i = _costs.find(dest);
+        }
+        if (i != _costs.end()) {
+            double pathCost = 0.0;
+            path.push_front(linkWeight(dest, i->second.second));
+            std::ostringstream oss;
+            routerId src = _localRouter;
+            for (auto s = path.cbegin(); s != path.cend(); ++s) {
+                oss << src << " --> " << s->first << "\t" << s->second << std::endl;
+                src = s->first;
+                pathCost += s->second;
+            }
+            oss << "\nTotal cost: " << pathCost << std::endl;
+            return oss.str();
+        }
+        return "No path to destination.\n";
+    }
+
+    const std::string printGraph() const {
+        std::ostringstream oss;
+        oss << "Source\t\tDestination\tCost\n";
+        oss << "------\t\t-----------\t----\n";
+        for (auto i = _graph.cbegin(); i != _graph.cend(); ++i) {
+            for (auto j = i->second.cbegin(); j != i->second.cend(); ++j) {
+                oss << i->first << "\t" << j->first << "\t" << j->second << std::endl;
+            }
+        }
+        return oss.str();
     }
 
 private:
