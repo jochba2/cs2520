@@ -10,6 +10,7 @@ services:
       - "/file_dir"
       - "link_list=/topo/links_10.txt"
       - "corrupt_msgs=1"
+      - "auto_start=1"
     networks:
       router-net:
         ipv4_address: 172.16.238.10
@@ -23,6 +24,7 @@ services:
       - "/file_dir"
       - "link_list=/topo/links_20.txt"
       - "corrupt_msgs=1"
+      - "auto_start=1"
     networks:
       router-net:
         ipv4_address: 172.16.238.20
@@ -36,6 +38,7 @@ services:
       - "/file_dir"
       - "link_list=/topo/links_30.txt"
       - "corrupt_msgs=1"
+      - "auto_start=1"
     networks:
       router-net:
         ipv4_address: 172.16.238.30

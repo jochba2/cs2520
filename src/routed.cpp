@@ -301,6 +301,13 @@ std::shared_ptr<MessagePusher> thisMessagePusher;
 
 std::shared_ptr<RoutingTable> thisTable;
 
+void _sendLSA() {
+    /*RouterMessage msgOut;
+    msgOut.routerID = thisTable->getThis();
+    msgOut.packetType = MessageType::BeNeighbor_Response;
+    msgOut.payload.write(response.c_str(), response.size() + 1);
+    thisMessagePusher->schedule(MessageToPush(message.routerID, msgOut));*/
+}
 
 class WorkerThread : public WorkerService<IncomingMessage>{
 public:
@@ -318,6 +325,23 @@ public:
         struct HandleBeNeighbor : public RouterMessageHandler{
             void operator()(RouterMessage& message, TcpSocket* socket){
                 printf("Success (%s, %i, %s)\n", message.routerID.c_str(), message.packetType, message.payload.data);
+                int versionIn;
+                std::istringstream iss;
+                iss.str((char*)message.payload.data);
+                if (!(iss >> versionIn)) {
+                    std::cout << "Couldn't parse BeNeighbor message. Ignoring." << std::endl;
+                    return;
+                }
+                std::string response = "1";
+                if (versionIn != version) {
+                    std::cout << "Version mismatch. Refusing connection." << std::endl;
+                    response = "0";
+                }
+                RouterMessage msgOut;
+                msgOut.routerID = thisTable->getThis();
+                msgOut.packetType = MessageType::BeNeighbor_Response;
+                msgOut.payload.write(response.c_str(), response.size() + 1);
+                thisMessagePusher->schedule(MessageToPush(message.routerID, msgOut));
             }
         };
         struct HandleAlive : public RouterMessageHandler {
@@ -336,6 +360,15 @@ public:
         struct HandleLSA : public RouterMessageHandler {
             void operator()(RouterMessage& message, TcpSocket* socket){
                 printf("Success (%s, %i, %s)\n", message.routerID.c_str(), message.packetType, message.payload.data);
+                //TODO: validate message, check version
+                //TODO: _sendLSA_Ack();
+                //TODO: _forwardLSA();
+                linkList newLinks;
+                routerId rid;
+                //TODO: parse out links and routerId from message
+                tableMonitor.lock();
+                thisTable->updateLinks(rid, newLinks);
+                tableMonitor.unlock();
             }
         };
         struct HandleFileInit : public RouterMessageHandler{
@@ -360,7 +393,7 @@ public:
                 sessionManager.retireSessionID(sessionID);
             }
         };
-		struct HandleFileAck : public RouterMessageHandler {
+        struct HandleFileAck : public RouterMessageHandler {
             void operator()(RouterMessage& message, TcpSocket* socket){
                 unsigned long sessionID = message.getSessionID();
                 printf("Success (%s, %i, %s)\n", message.routerID.c_str(), sessionID, message.payload.data);
@@ -377,6 +410,33 @@ public:
         struct HandleBeNeighbor_Response : public RouterMessageHandler{
             void operator()(RouterMessage& message, TcpSocket* socket){
                 printf("Success (%s, %i, %s)\n", message.routerID.c_str(), message.packetType, message.payload.data);
+                bool found = false;
+                auto ll = localLinks.begin();
+                for (; ll != localLinks.end(); ++ll) {
+                    if (ll->second.dest == message.routerID) {
+                        found = true;
+                        break;
+                    }
+                }
+                if (!found) {
+                    std::cout << "Got message on unkown link. Ignoring." << std::endl;
+                    return;
+                }
+                LocalLink& link = ll->second;
+                link.helloInterval.start();
+                std::string response;
+                if (message.payload.data[0] != '1') {
+                    std::cout << "Neighbor refused request, retrying later." << std::endl;
+                    link.state = DEAD;
+                    return;
+                }
+                std::cout << "Neighbor '" << link.dest << "' accepted." << std::endl;
+                link.updateInterval.start();
+                link.state = ALIVE;
+                tableMonitor.lock();
+                thisTable->updateMyLink(link.dest, link.cost);
+                tableMonitor.unlock();
+                _sendLSA();
             }
         };
 		struct HandleAlive_Response : public RouterMessageHandler {
@@ -439,45 +499,64 @@ private:
 	// for sending link association, alive, and cost messages
 	// also for retransmitting unacked file chunks
 	void intervalTasks() override {
-        for(auto& ll : localLinks){
+        for (auto& ll : localLinks) {
             LocalLink& link = ll.second;
             std::string& dest = link.dest;
-            if(link.helloInterval.elapsed()>link.helloInt){
-                RouterMessage msg;
-                msg.routerID = thisTable->getThis();
-                msg.packetType = MessageType::Alive;
-                thisMessagePusher->schedule(MessageToPush(dest, msg));
-                link.helloInterval.start();
-                link.helloSent.start();
-            }
-            if(link.updateInterval.elapsed()>link.updateInt){
-                RouterMessage msg;
-                msg.routerID = thisTable->getThis();
-                msg.packetType = MessageType::Alive;
-                thisMessagePusher->schedule(MessageToPush(dest, msg));
-                link.updateInterval.start();
-                link.updateSent.start();
+            switch (link.state) {
+            case NEW:
+            case DEAD:
+                if (link.helloInterval.elapsed() > link.helloInt) {
+                    RouterMessage msg;
+                    msg.routerID = thisTable->getThis();
+                    msg.packetType = MessageType::BeNeighbor;
+                    std::ostringstream oss;
+                    oss << version;
+                    std::string body = oss.str();
+                    msg.payload.write(body.c_str(), body.size() + 1);
+                    std::cout << "Sending BeNeighbor request to '" << dest << "'." << std::endl;
+                    thisMessagePusher->schedule(MessageToPush(dest, msg));
+                    link.helloSent.start();
+                    link.state = ACQUISITION;
+                }
+                break;
+            case ACQUISITION:
+            case HELLO_UPDATE:
+                // we didn't get a BeNeighbor_Response or Alive_Response in time
+                // take the link offline for a little while
+                if (link.helloSent.elapsed() > link.helloInt) {
+                    link.helloInterval.start();
+                    link.state = DEAD;
+                    //TODO: update routing table and send LSA
+                }
+                break;
+            case ALIVE:
+                /*if(link.helloInterval.elapsed()>link.helloInt){
+                    RouterMessage msg;
+                    msg.routerID = thisTable->getThis();
+                    msg.packetType = MessageType::Alive;
+                    thisMessagePusher->schedule(MessageToPush(dest, msg));
+                    link.helloInterval.start();
+                    link.helloSent.start();
+                    link.state = HELLO_UPDATE;
+                    continue;
+                }
+                if(link.updateInterval.elapsed()>link.updateInt){
+                    RouterMessage msg;
+                    msg.routerID = thisTable->getThis();
+                    msg.packetType = MessageType::Alive;
+                    thisMessagePusher->schedule(MessageToPush(dest, msg));
+                    link.updateInterval.start();
+                    link.updateSent.start();
+                    link.state = COST_UPDATE;
+                }*/
+                break;
+            case COST_UPDATE:
+                //TODO: check for update response
+                break;
             }
         }
-		// for each localLink():
-		//   switch(linkState) {
-		//   case NEW:
-		//   case DEAD:
-		//     send Be_Neighbor_Request for each link
-		//     advance link state machine for each link
-		//   case ACQUISITION:
-		//     if (time > BeNeighborSent) { advanceState(DEAD); }
-		//   case ALIVE:
-		//     if (time > helloInterval) { sendHello(); advanceState(HELLO_UPDATE) }
-		//     if (time > updateInterval) { sendPing(); advanceState(COST_UPDATE) }
-		//   case HELLO_UPDATE:
-		//     if (time > helloSent) { advanceState(DEAD); }
-		//   case COST_UPDATE:
-		//     if (time > updateIntEnd) { recomputeCost(link); updateTable(); sendLSA(); }
-		//   }
-		//
-		// for each outgoingFile():
-		//   if (time > ackInterval) { resendFileChunks(); }
+        // for each outgoingFile():
+        //   if (time > ackInterval) { resendFileChunks(); }
 	}
 
     void executeTask(IncomingMessage& item){
@@ -533,12 +612,12 @@ private:
 
 class UI {
 public:
-    UI(const routerId& rid, unsigned short port) {
+    UI(const routerId& rid, unsigned short port, bool corruptMsgs) {
         _running = false;
         _port = port;
         _table = std::make_shared<RoutingTable>(rid);
         _worker = std::make_shared<WorkerThread>(_table);
-        _messagePusher = std::make_shared<MessagePusher>(true);
+        _messagePusher = std::make_shared<MessagePusher>(corruptMsgs);
         thisWorker = _worker;
         thisMessagePusher = _messagePusher;
         thisTable = _table;
@@ -557,7 +636,7 @@ public:
                 _exit();
                 return;
             } else if (line.find("start") != std::string::npos)
-                _start();
+                start();
             else if (line.find("scp") != std::string::npos)
             {
                 // --------------------- TEST ---------------------
@@ -609,6 +688,18 @@ public:
             count++;
         }
         std::cout << "Loaded " << count << " links at startup.";
+    }
+
+    void start() {
+        if (_running) {
+            std::cout << "Router is already running." << std::endl;
+            return;
+        }
+        _worker->start();
+        _messagePusher->start();
+        _listener->start(_port);
+        std::cout << "Router v" << version << " started." << std::endl;
+        _running = true;
     }
 
 private:
@@ -667,25 +758,6 @@ private:
         }
         version = version_in;
         std::cout << "Version set to " << version << "." << std::endl;
-    }
-
-    void _start() {
-        if (_running) {
-            std::cout << "Router is already running." << std::endl;
-            return;
-        }
-
-        linkList newLinks;
-        for (auto l = localLinks.cbegin(); l != localLinks.cend(); ++l) {
-            newLinks.push_back(linkWeight(l->second.dest, l->second.cost));
-        }
-        _table->updateLinks(_table->getThis(), newLinks);
-
-        _worker->start();
-        _messagePusher->start();
-        _listener->start(_port);
-        std::cout << "Router v" << version << " started." << std::endl;
-        _running = true;
     }
 
     void _exit() {
@@ -763,8 +835,8 @@ private:
             std::cout << "\n\t<link_id> - The ID of the link";
             std::cout << "\n\t<destination_router_ip> - The IP of the router on the other end of the link";
             std::cout << "\n\t<cost> - (double) The initial cost of the link";
-            std::cout << "\n\t<hello> - (unsigned long) The interval between alive messages (ms)";
-            std::cout << "\n\t<update> - (unsigned long) The interval between updating link cost (ms)\n";
+            std::cout << "\n\t<hello> - (unsigned long) The interval between alive messages (sec)";
+            std::cout << "\n\t<update> - (unsigned long) The interval between updating link cost (sec)\n";
         } else if (cmd == "help show-path") {
             std::cout << "show-path <destination_ip>" << std::endl;
             std::cout << "\n\tCalculates the path to <destination_ip> using this router's";
@@ -778,15 +850,16 @@ private:
 
 void usage() {
     std::cout << "Usage: ./routed <router_ip> <file_dir> ";
-    std::cout << "[link_list=<file_path>] [corrupt_msgs]\n\n";
+    std::cout << "[link_list=<file_path>] [corrupt_msgs] [auto_start]\n\n";
     std::cout << "<router_ip> - The IP address and ID assigned to this router\n";
     std::cout << "<file_dir> - Absolute path to the directory to send/recv files\n";
     std::cout << "[link_list=<file_path>] - Absolute path to a file with links to add to router\n";
     std::cout << "[corrupt_msgs=<bool>] - 1 to simulate packet and network errors (default: 0)\n";
+    std::cout << "[auto_start=<bool>] - start router automatically (default: 0)\n";
 }
 
 int main(int args, char** argv){
-    if (args < 3 || args > 5) {
+    if (args < 3 || args > 6) {
         usage();
         return 1;
     }
@@ -796,17 +869,22 @@ int main(int args, char** argv){
     std::string linkFile;
     unsigned short port = default_port;
     bool corruptMsgs = false;
+    bool autoStart = false;
     for (int i = 3; i < args; i++) {
         if (!strncmp(argv[i], "corrupt_msgs=", 13)) {
             corruptMsgs = (argv[i][13] == '1');
         } else if (!strncmp(argv[i], "link_list=", 10)) {
             linkFile = argv[i] + 10;
+        } else if (!strncmp(argv[i], "auto_start=", 11)) {
+            autoStart = (argv[i][11] == '1');
         }
     }
 
-    UI ui{routerIP, port};
+    UI ui{routerIP, port, corruptMsgs};
     if (!linkFile.empty())
         ui.loadLinks(linkFile);
+    if (autoStart)
+        ui.start();
     ui.loop();
 
     return 0;

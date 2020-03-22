@@ -17,6 +17,36 @@ class RoutingTable {
 public:
     RoutingTable(const routerId& id) : _localRouter(id) {}
 
+    void updateMyLink(const routerId& dest, double weight) {
+        if (_graph.count(_localRouter) == 0 && weight != 0) {
+            // add first link
+            linkList links;
+            links.push_back(linkWeight(dest, weight));
+            _graph[_localRouter] = links;
+            _updateCostTable();
+            return;
+        }
+        for (auto i = _graph[_localRouter].begin(); i != _graph[_localRouter].end(); ++i) {
+            if (dest == i->first) {
+                if (weight == 0) {
+                    // delete
+                    _graph[_localRouter].erase(i);
+                    _updateCostTable();
+                    return;
+                }
+                // update
+                i->second = weight;
+                _updateCostTable();
+                return;
+            }
+        }
+        if (weight != 0) {
+            // add later link
+            _graph[_localRouter].push_back(linkWeight(dest, weight));
+            _updateCostTable();
+        }
+    }
+
     void updateLinks(const routerId& r, const linkList& links) {
         _graph[r] = links;
         _updateCostTable();

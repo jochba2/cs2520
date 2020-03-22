@@ -31,7 +31,7 @@ public:
     void start(){
         clock_gettime(CLOCK_REALTIME, &_abstime);
     }
-    unsigned int elapsed(){
+    unsigned long elapsed(){
         timespec t;
         clock_gettime(CLOCK_REALTIME, &t);
         return (t.tv_sec - _abstime.tv_sec)*1000 + (t.tv_nsec - _abstime.tv_nsec)/1000000;
