@@ -8,7 +8,7 @@ services:
       - "./routed"
       - "172.16.238.10"
       - "/file_dir"
-      - "link_list=/src/links_10.txt"
+      - "link_list=/topo/links_10.txt"
       - "corrupt_msgs=1"
     networks:
       router-net:
@@ -21,11 +21,24 @@ services:
       - "./routed"
       - "172.16.238.20"
       - "/file_dir"
-      - "link_list=/src/links_20.txt"
+      - "link_list=/topo/links_20.txt"
       - "corrupt_msgs=1"
     networks:
       router-net:
         ipv4_address: 172.16.238.20
+  routed_30:
+    build: .
+    stdin_open: true
+    tty: true
+    command:
+      - "./routed"
+      - "172.16.238.30"
+      - "/file_dir"
+      - "link_list=/topo/links_30.txt"
+      - "corrupt_msgs=1"
+    networks:
+      router-net:
+        ipv4_address: 172.16.238.30
 networks:
   router-net:
     ipam:
