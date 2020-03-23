@@ -27,7 +27,7 @@
 
 class Stopwatch{
 public:
-    Stopwatch(){start();}
+    Stopwatch(){_abstime.tv_sec = 0; _abstime.tv_nsec = 0;}
     void start(){
         clock_gettime(CLOCK_REALTIME, &_abstime);
     }

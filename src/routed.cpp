@@ -98,7 +98,7 @@ public:
           cost(cost),
           helloInt(hello),
           updateInt(update),
-          state(NEW) {}
+          state(NEW) {helloInterval.start(); helloSent.start(); updateInterval.start(); updateSent.start(); BeNeighborSent.start(); updateIntEnd.start();}
 
     routerId dest;
     double cost;
@@ -389,7 +389,7 @@ public:
 
 struct OutgoingFileTransferChunk{
     Stopwatch timer;
-    bool ackReceived = false;
+    bool ack_sent = false;
     Buffer data;
 };
 
@@ -564,9 +564,15 @@ public:
                 delete buf;
                 
                 unsigned int n_chunks;
-                message.payload.read(&n_chunks, sizeof(n_chunks), index);
+                message.payload.read(&n_chunks, sizeof(n_chunks), index); // read number of chunks
                 
                 printf("FIle init from %s to %s, spanning %i chunks\n", source.c_str(), destination.c_str(), n_chunks);
+                
+                incomingFileTransfersLock.lock();
+                auto& file = incomingFileTransfers[std::pair<routerId, unsigned long>(source, sessionID)];
+                file = std::unique_ptr<IncomingFileTransfer>(new IncomingFileTransfer(filename, n_chunks));
+                file->source = source;
+                incomingFileTransfersLock.unlock();
 
                 // return response
                 RouterMessage rmsg;
@@ -588,8 +594,90 @@ public:
         struct HandleFileChunk : public RouterMessageHandler {
             void operator()(RouterMessage& message, TcpSocket* socket){
                 unsigned long sessionID = message.getSessionID();
-                printf("Success (%s, %i, %s)\n", message.routerID.c_str(), sessionID, message.payload.data);
-                sessionManager.retireSessionID(sessionID);
+                int index=0;
+                size_t l;
+                char* buf;
+
+                message.payload.read(&l, sizeof(l), index); // read source
+                buf = new char[l+1];
+                message.payload.read(buf, l, index);
+                std::string source(buf, l);
+                delete buf;
+
+                message.payload.read(&l, sizeof(l), index); // read destination
+                buf = new char[l+1];
+                message.payload.read(buf, l, index);
+                std::string destination(buf, l);
+                delete buf;
+                
+                if(destination!=thisTable->getThis()){
+                    // retransmit to next hop
+                    printf("Routing FileChunk message\n");
+
+                    RouterMessage rmsg = message;
+                    rmsg.routerID = thisTable->getThis();
+                    routerId dest = thisTable->nextHop(destination);
+                    thisMessagePusher->schedule(MessageToPush(dest, rmsg));
+                    return;
+                }
+                
+                unsigned long seqnum;
+                message.payload.read(&seqnum, sizeof(seqnum), index); // read sequence number
+                
+                unsigned long chunk_size;
+                message.payload.read(&chunk_size, sizeof(chunk_size), index); // read chunk size
+                
+                incomingFileTransfersLock.lock();
+                if(incomingFileTransfers.find(std::pair<routerId, unsigned long>(source, sessionID))!=incomingFileTransfers.end()){
+                    auto& file = incomingFileTransfers[std::pair<routerId, unsigned long>(source, sessionID)];
+                    auto& chunk = file->chunks[seqnum];
+                    chunk = std::unique_ptr<Buffer>(new Buffer(chunk_size));
+                    message.payload.read(chunk->data, chunk_size, index); // read chunk data
+                    bool file_complete = true;
+                    for(auto& chnk : file->chunks){
+                        if(!chnk)
+                            file_complete = false;
+                    }
+                    if(file_complete){
+                        std::stringstream msg;
+                        msg << std::string("File ") << file->filename << std::string(" received successfully");
+                        logger.write(msg.str());
+                        FILE *fp = fopen(file->filename.c_str(), "wb");
+                        if(fp){
+                            for(auto& chnk : file->chunks){
+                                fwrite(chnk->data, 1, chnk->size, fp);
+                            }
+                            fclose(fp);
+                        }
+                    }
+                    incomingFileTransfers.erase(std::pair<routerId, unsigned long>(source, sessionID));
+                }
+                incomingFileTransfersLock.unlock();
+                
+                // TODO
+                
+                printf("File chunk %i\n", seqnum);
+                
+                
+
+                // return acknowledgement response
+                RouterMessage rmsg;
+                rmsg.routerID = thisTable->getThis();
+                rmsg.packetType = MessageType::FileChunk_Response;
+                rmsg.addSessionID(sessionID);
+
+                l = destination.size(); // destination
+                rmsg.payload.write(&l, sizeof(l));
+                rmsg.payload.write(destination.c_str(), l);
+
+                l = source.size();  //  source
+                rmsg.payload.write(&l, sizeof(l));
+                rmsg.payload.write(source.c_str(), l);
+                
+                rmsg.payload.write(&seqnum, sizeof(seqnum));
+                
+                thisMessagePusher->schedule(MessageToPush(thisTable->nextHop(source), rmsg));
+
             }
         };
         struct HandleFileAck : public RouterMessageHandler {
@@ -677,7 +765,6 @@ public:
         };
 		struct HandleFileInit_Response : public RouterMessageHandler {
             void operator()(RouterMessage& message, TcpSocket* socket){
-
                 unsigned long sessionID = message.getSessionID();
                 int index=0;
                 size_t l;
@@ -711,12 +798,48 @@ public:
                 file->ack_sent = true;
                 outgoingFileTransfersLock.unlock();
                 printf("File transfer init acknowledged\n");
-
             }
         };
 		struct HandleFileChunk_Response : public RouterMessageHandler {
             void operator()(RouterMessage& message, TcpSocket* socket){
-                printf("Success (%s, %i, %s)\n", message.routerID.c_str(), message.packetType, message.payload.data);
+                unsigned long sessionID = message.getSessionID();
+                int index=0;
+                size_t l;
+                char* buf;
+
+                message.payload.read(&l, sizeof(l), index); // read source
+                buf = new char[l+1];
+                message.payload.read(buf, l, index);
+                std::string source(buf, l);
+                delete buf;
+                
+                message.payload.read(&l, sizeof(l), index); // read destination
+                buf = new char[l+1];
+                message.payload.read(buf, l, index);
+                std::string destination(buf, l);
+                delete buf;
+                
+                
+                if(destination!=thisTable->getThis()){
+                    // retransmit to next hop
+                    printf("Routing FileChunk_Response message\n");
+                    RouterMessage rmsg = message;
+                    rmsg.routerID = thisTable->getThis();
+                    routerId dest = thisTable->nextHop(destination);
+                    thisMessagePusher->schedule(MessageToPush(dest, rmsg));
+                    return;
+                }
+                
+                unsigned long seqnum;
+                message.payload.read(&seqnum, sizeof(seqnum), index); // read sequence number
+                
+                
+                outgoingFileTransfersLock.lock();
+                auto& file = outgoingFileTransfers[sessionID];
+                auto& chunk = file->chunks[seqnum];
+                chunk.ack_sent = true;
+                outgoingFileTransfersLock.unlock();
+                printf("File transfer chunk %i acknowledged\n", seqnum);
             }
         };
 		struct HandleFileAck_Response : public RouterMessageHandler {
@@ -823,27 +946,46 @@ private:
         outgoingFileTransfersLock.lock();
         std::vector<unsigned long> filesComplete;
         for(auto& file : outgoingFileTransfers){
+            size_t l;
             if(file.second->ack_sent){
                 bool file_sent = true;
-                /*for(auto& chunk : file.second.chunks){
+                unsigned long seqnum = 0;
+                for(auto& chunk : file.second->chunks){
                     if(!chunk.ack_sent){
                         file_sent = false;
                         if(chunk.timer.elapsed()>5000){
                             RouterMessage rmsg;
                             rmsg.routerID = thisTable->getThis();
-                            //rmsg.routerIP = file.second.destination;
                             rmsg.packetType = MessageType::FileChunk;
+                            rmsg.addSessionID(file.first); // session id
+                            
+                            l = thisTable->getThis().size();  //  source
+                            rmsg.payload.write(&l, sizeof(l));
+                            rmsg.payload.write(thisTable->getThis().c_str(), l);
+                            
+                            l = file.second->destination.size(); // destination
+                            rmsg.payload.write(&l, sizeof(l));
+                            rmsg.payload.write(file.second->destination.c_str(), l);
+                            
+                            rmsg.payload.write(&seqnum, sizeof(seqnum)); // sequence number
+                            
+                            unsigned long chunk_size = chunk.data.size;
+                            rmsg.payload.write(&chunk_size, sizeof(chunk_size)); // chunk size
+                            
+                            rmsg.payload += chunk.data; // chunk
+                            
+                            routerId dest = thisTable->nextHop(file.second->destination);
                             thisMessagePusher->schedule(MessageToPush(dest, rmsg));
                             chunk.timer.start();
-                            
                         }
                     }
-                }*/
-                filesComplete.push_back(file.first);
+                    seqnum++;
+                }
+                if(file_sent)
+                    filesComplete.push_back(file.first);
             } else {
                 if(file.second->timer.elapsed()>5000){
                     RouterMessage rmsg;
-                    size_t l;
                     rmsg.routerID = thisTable->getThis();
                     rmsg.packetType = MessageType::FileInit;
                     rmsg.addSessionID(file.first); // session id
@@ -871,6 +1013,10 @@ private:
             }
         }
         for(auto& f : filesComplete){
+            auto& file = outgoingFileTransfers[f];
+            std::stringstream msg;
+            msg << std::string("File ") << file->filename << std::string(" sent successfully");
+            logger.write(msg.str());
             outgoingFileTransfers.erase(f);
         }
         outgoingFileTransfersLock.unlock();
