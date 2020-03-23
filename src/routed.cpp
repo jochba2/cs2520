@@ -23,6 +23,7 @@ enum linkState {
 };
 
 const unsigned short default_port = 5678;
+const unsigned long file_chunk_size = 32;
 
 namespace MessageType{
     static const int BeNeighbor = 1;
@@ -376,6 +377,8 @@ void _forwardLSA(const RouterMessage& msgIn, unsigned long seqNum) {
     }
 }
 
+std::string homeDirectory; // directory of uploads and downloads
+
 class IncomingFileTransfer{
 public:
     IncomingFileTransfer(const std::string& filename, unsigned int chunks){
@@ -397,12 +400,14 @@ class OutgoingFileTransfer{
 public:
     OutgoingFileTransfer(const std::string& filename){
         this->filename = filename;
-        FILE *fp = fopen(filename.c_str(), "rb");
+        std::string filepath = homeDirectory + filename;
+        printf("[%s]\n", filepath.c_str());
+        FILE *fp = fopen(filepath.c_str(), "rb");
         if(!fp)
             throw std::runtime_error("File not found");
         while(feof(fp)==0){
-            char buf[32];
-            size_t l = fread(buf, 1, 32, fp);
+            char buf[file_chunk_size];
+            size_t l = fread(buf, 1, file_chunk_size, fp);
             if(l==0)
                 break;
             chunks.push_back({});
@@ -419,7 +424,6 @@ public:
     std::string filename;
     std::vector<OutgoingFileTransferChunk> chunks;
 };
-
 
 std::map<std::pair<routerId, unsigned long>, std::unique_ptr<IncomingFileTransfer>> incomingFileTransfers;
 Monitor incomingFileTransfersLock;
@@ -642,15 +646,16 @@ public:
                         std::stringstream msg;
                         msg << std::string("File ") << file->filename << std::string(" received successfully");
                         logger.write(msg.str());
-                        FILE *fp = fopen(file->filename.c_str(), "wb");
+                        std::string filepath = homeDirectory + file->filename;
+                        FILE *fp = fopen(filepath.c_str(), "wb");
                         if(fp){
                             for(auto& chnk : file->chunks){
                                 fwrite(chnk->data, 1, chnk->size, fp);
                             }
                             fclose(fp);
                         }
+                        incomingFileTransfers.erase(std::pair<routerId, unsigned long>(source, sessionID));
                     }
-                    incomingFileTransfers.erase(std::pair<routerId, unsigned long>(source, sessionID));
                 }
                 incomingFileTransfersLock.unlock();
                 
@@ -1341,6 +1346,21 @@ int main(int args, char** argv){
         } else if (!strncmp(argv[i], "auto_start=", 11)) {
             autoStart = (argv[i][11] == '1');
         }
+    }
+    
+    if(fileDir.size()==0){
+        homeDirectory = std::string("./");
+    } else {
+        homeDirectory = fileDir;
+        while(homeDirectory.size()>0 && homeDirectory.c_str()[0]==' '){
+            homeDirectory = std::string(&(homeDirectory.c_str()[1]), homeDirectory.size()-1);
+        }
+        while(homeDirectory.size()>0 && (homeDirectory.c_str()[homeDirectory.size()-1]==' ' or homeDirectory.c_str()[homeDirectory.size()-1]=='/')){
+            homeDirectory = std::string(homeDirectory.c_str(), homeDirectory.size()-1);
+        }
+        if(homeDirectory.size()==0)
+            homeDirectory = ".";
+        homeDirectory.append("/");
     }
 
     UI ui{routerIP, port, false};
