@@ -549,6 +549,14 @@ public:
 		struct HandleAlive_Response : public RouterMessageHandler {
             void operator()(RouterMessage& message, TcpSocket* socket){
                 printf("Success (%s, %i, %s)\n", message.routerID.c_str(), message.packetType, message.payload.data);
+                for (auto& ll : localLinks) {
+                    if (ll.second.dest == message.routerID) {
+                        std::cout << "Confirmed link is alive." << std::endl;
+                        ll.second.helloInterval.start();
+                        ll.second.state = ALIVE;
+                        break;
+                    }
+                }
             }
         };
         struct HandleLinkCostPing_Response : public RouterMessageHandler{
@@ -658,7 +666,8 @@ private:
                     std::cout << "Retransmitting unACK'd LSA message." << std::endl;
                     thisMessagePusher->schedule(MessageToPush(link.dest, *(LSA_msg.second)));
                 }*/
-                /*if(link.helloInterval.elapsed()>link.helloInt){
+                if(link.helloInterval.elapsed()>link.helloInt){
+                    std::cout << "Sending Alive message." << std::endl;
                     RouterMessage msg;
                     msg.routerID = thisTable->getThis();
                     msg.packetType = MessageType::Alive;
@@ -668,7 +677,7 @@ private:
                     link.state = HELLO_UPDATE;
                     continue;
                 }
-                if(link.updateInterval.elapsed()>link.updateInt){
+                /*if(link.updateInterval.elapsed()>link.updateInt){
                     RouterMessage msg;
                     msg.routerID = thisTable->getThis();
                     msg.packetType = MessageType::Alive;
@@ -709,15 +718,6 @@ private:
         
         item.socket->writeMsg(response);
 
-        /*TextMessage response;
-        response.text = "Hello world!";
-        bool s = true;
-        if(s){
-            s = s && response.send(item.socket);
-            if(s){
-                printf("Replied\n");
-            }
-        }*/
         delete item.socket;
     }
 };
