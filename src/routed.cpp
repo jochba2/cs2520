@@ -86,6 +86,7 @@ struct {
     unsigned long nextSessionID = 0;
 }sessionManager;
 
+typedef std::map<unsigned long, std::shared_ptr<RouterMessage>> LSA_Map;
 struct LocalLink {
 public:
     LocalLink() : dest(""), cost(0), helloInt(0), updateInt(0), state(NEW) {}
@@ -107,9 +108,12 @@ public:
     Stopwatch helloInterval, helloSent;
     Stopwatch updateInterval, updateSent;
     Stopwatch BeNeighborSent, updateIntEnd;
+    LSA_Map pending_LSAs;
 };
 typedef std::map<std::string, LocalLink> LinkMap;
 LinkMap localLinks;
+
+std::map<routerId, unsigned long> lastSeqNums;
 
 
 Monitor tableMonitor;
@@ -302,11 +306,74 @@ std::shared_ptr<MessagePusher> thisMessagePusher;
 std::shared_ptr<RoutingTable> thisTable;
 
 void _sendLSA() {
-    /*RouterMessage msgOut;
+    std::cout << "Broadcasting LSA." << std::endl;
+
+    // build message
+    std::shared_ptr<RouterMessage> msgOut = std::make_shared<RouterMessage>();
+    msgOut->routerID = thisTable->getThis();
+    msgOut->packetType = MessageType::LSA;
+    unsigned long seqNum = sessionManager.getSessionID();
+    std::ostringstream oss;
+    oss << thisTable->getThis() << " ";     // Advertising Router field
+    oss << seqNum << " ";                   // LSA SeqNum
+    size_t count = 0;
+    for (auto& ll : localLinks) {
+        if (!(ll.second.state == ALIVE ||
+              ll.second.state == HELLO_UPDATE ||
+              ll.second.state == COST_UPDATE)) { continue; }
+        count++;
+    }
+    oss << count << std::endl;  // # links
+    for (auto& ll : localLinks) {
+        if (!(ll.second.state == ALIVE ||
+              ll.second.state == HELLO_UPDATE ||
+              ll.second.state == COST_UPDATE)) { continue; }
+        oss << ll.first << " ";             // link ID
+        oss << ll.second.dest << " ";       // link dest
+        oss << ll.second.cost << std::endl; //link cost
+    }
+    std::string body = oss.str();
+    msgOut->payload.write(body.c_str(), body.size() + 1);
+
+    // broadcast to all my ALIVE neighbors
+    for (auto& ll : localLinks) {
+        if (!(ll.second.state == ALIVE ||
+              ll.second.state == HELLO_UPDATE ||
+              ll.second.state == COST_UPDATE)) { continue; }
+        ll.second.pending_LSAs[seqNum] = msgOut;
+        thisMessagePusher->schedule(MessageToPush(ll.second.dest, *msgOut));
+    }
+}
+
+void _sendLSA_Ack(const routerId& dest, unsigned long seqNum) {
+    std::cout << "Sending LSA_Response." << std::endl;
+    RouterMessage msgOut;
     msgOut.routerID = thisTable->getThis();
-    msgOut.packetType = MessageType::BeNeighbor_Response;
-    msgOut.payload.write(response.c_str(), response.size() + 1);
-    thisMessagePusher->schedule(MessageToPush(message.routerID, msgOut));*/
+    msgOut.packetType = MessageType::LSA_Response;
+    std::ostringstream oss;
+    oss << seqNum;
+    std::string body = oss.str();
+    msgOut.payload.write(body.c_str(), body.size() + 1);
+    thisMessagePusher->schedule(MessageToPush(dest, msgOut));
+}
+
+void _forwardLSA(const RouterMessage& msgIn, unsigned long seqNum) {
+    // copy message
+    std::cout << "Forwarding LSA message to neighbors." << std::endl;
+    std::shared_ptr<RouterMessage> msgOut = std::make_shared<RouterMessage>();
+    msgOut->routerID = thisTable->getThis();
+    msgOut->packetType = MessageType::LSA;
+    msgOut->payload = msgIn.payload;
+
+    // broadcast to all my ALIVE neighbors, except the link this came from
+    for (auto& ll : localLinks) {
+        if (!(ll.second.state == ALIVE ||
+              ll.second.state == HELLO_UPDATE ||
+              ll.second.state == COST_UPDATE)) { continue; }
+        if (ll.second.dest == msgIn.routerID) { continue; }
+        ll.second.pending_LSAs[seqNum] = msgOut;
+        thisMessagePusher->schedule(MessageToPush(ll.second.dest, *msgOut));
+    }
 }
 
 class WorkerThread : public WorkerService<IncomingMessage>{
@@ -360,14 +427,53 @@ public:
         struct HandleLSA : public RouterMessageHandler {
             void operator()(RouterMessage& message, TcpSocket* socket){
                 printf("Success (%s, %i, %s)\n", message.routerID.c_str(), message.packetType, message.payload.data);
-                //TODO: validate message, check version
-                //TODO: _sendLSA_Ack();
-                //TODO: _forwardLSA();
+
+                // parse
                 linkList newLinks;
-                routerId rid;
-                //TODO: parse out links and routerId from message
+                routerId advertisingRID;
+                unsigned long seqNum;
+                size_t numLinks;
+                std::istringstream iss;
+                iss.str((char*)message.payload.data);
+                if (!(iss >> advertisingRID >> seqNum >> numLinks)) {
+                    std::cout << "Couldn't parse LSA message header. Ignoring." << std::endl;
+                    return;
+                }
+                if (advertisingRID == thisTable->getThis()) {
+                    std::cout << "Got LSA with self as advertising router. Ignoring." << std::endl;
+                    return;
+                }
+                std::string linkID;
+                routerId linkDest;
+                double linkCost;
+                while (iss >> linkID >> linkDest >> linkCost) {
+                    newLinks.push_back(linkWeight(linkDest, linkCost));
+                    numLinks--;
+                }
+                if (numLinks) {
+                    std::cout << "Couldn't parse LSA message body. Ignoring." << std::endl;
+                    return;
+                }
+
+                // ack
+                std::cout << "Got LSA message." << std::endl;
+                _sendLSA_Ack(message.routerID, seqNum);
+
+                // ignore duplicates (handle cycles in network)
+                if (lastSeqNums.count(advertisingRID) && lastSeqNums[advertisingRID] <= seqNum) {
+                    std::cout << "Got duplicate LSA. Ignoring." << std::endl;
+                    return;
+                } else {
+                    lastSeqNums[advertisingRID] = seqNum;
+                }
+
+                // flood
+                _forwardLSA(message, seqNum);
+
+                // update our graph & paths
                 tableMonitor.lock();
-                thisTable->updateLinks(rid, newLinks);
+                thisTable->updateLinks(advertisingRID, newLinks);
+                std::cout << "Network Graph:\n" << thisTable->printGraph();
                 tableMonitor.unlock();
             }
         };
@@ -435,6 +541,7 @@ public:
                 link.state = ALIVE;
                 tableMonitor.lock();
                 thisTable->updateMyLink(link.dest, link.cost);
+                std::cout << "Network Graph:\n" << thisTable->printGraph();
                 tableMonitor.unlock();
                 _sendLSA();
             }
@@ -452,6 +559,19 @@ public:
 		struct HandleLSA_Response : public RouterMessageHandler {
             void operator()(RouterMessage& message, TcpSocket* socket){
                 printf("Success (%s, %i, %s)\n", message.routerID.c_str(), message.packetType, message.payload.data);
+                unsigned long seqNumIn;
+                std::istringstream iss;
+                iss.str((char*)message.payload.data);
+                if (!(iss >> seqNumIn)) {
+                    std::cout << "Couldn't parse LSA_Response message. Ignoring." << std::endl;
+                    return;
+                }
+                std::cout << "Got LSA_Response." << std::endl;
+                for (auto& ll : localLinks) {
+                    if (ll.second.dest == message.routerID) {
+                        ll.second.pending_LSAs.erase(seqNumIn);
+                    }
+                }
             }
         };
 		struct HandleFileInit_Response : public RouterMessageHandler {
@@ -524,12 +644,20 @@ private:
                 // we didn't get a BeNeighbor_Response or Alive_Response in time
                 // take the link offline for a little while
                 if (link.helloSent.elapsed() > link.helloInt) {
+                    std::cout << "BeNeighbor/Alive check timed out. Clearing link and scheduling retry." << std::endl;
                     link.helloInterval.start();
                     link.state = DEAD;
-                    //TODO: update routing table and send LSA
+                    tableMonitor.lock();
+                    thisTable->updateMyLink(link.dest, 0);
+                    tableMonitor.unlock();
+                    _sendLSA();
                 }
                 break;
             case ALIVE:
+                /*for (auto& LSA_msg : link.pending_LSAs) {
+                    std::cout << "Retransmitting unACK'd LSA message." << std::endl;
+                    thisMessagePusher->schedule(MessageToPush(link.dest, *(LSA_msg.second)));
+                }*/
                 /*if(link.helloInterval.elapsed()>link.helloInt){
                     RouterMessage msg;
                     msg.routerID = thisTable->getThis();
@@ -880,7 +1008,7 @@ int main(int args, char** argv){
         }
     }
 
-    UI ui{routerIP, port, corruptMsgs};
+    UI ui{routerIP, port, false};
     if (!linkFile.empty())
         ui.loadLinks(linkFile);
     if (autoStart)

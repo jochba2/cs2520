@@ -80,11 +80,11 @@ public:
             std::ostringstream oss;
             routerId src = _localRouter;
             for (auto s = path.cbegin(); s != path.cend(); ++s) {
-                oss << src << " --> " << s->first << "\t" << s->second << std::endl;
+                oss << src << " --> " << s->first << "\t" << s->second - pathCost << std::endl;
                 src = s->first;
-                pathCost += s->second;
+                pathCost += s->second - pathCost;
             }
-            oss << "\nTotal cost: " << pathCost << std::endl;
+            oss << "Total cost: " << pathCost << std::endl;
             return oss.str();
         }
         return "No path to destination.\n";
