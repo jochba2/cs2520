@@ -376,6 +376,56 @@ void _forwardLSA(const RouterMessage& msgIn, unsigned long seqNum) {
     }
 }
 
+class IncomingFileTransfer{
+public:
+    IncomingFileTransfer(const std::string& filename, unsigned int chunks){
+        this->filename = filename;
+        this->chunks.resize(chunks);
+    }
+    routerId source;
+    std::string filename;
+    std::vector<std::unique_ptr<Buffer>> chunks;
+};
+
+struct OutgoingFileTransferChunk{
+    Stopwatch timer;
+    bool ackReceived = false;
+    Buffer data;
+};
+
+class OutgoingFileTransfer{
+public:
+    OutgoingFileTransfer(const std::string& filename){
+        this->filename = filename;
+        FILE *fp = fopen(filename.c_str(), "rb");
+        if(!fp)
+            throw std::runtime_error("File not found");
+        while(feof(fp)==0){
+            char buf[32];
+            size_t l = fread(buf, 1, 32, fp);
+            if(l==0)
+                break;
+            chunks.push_back({});
+            OutgoingFileTransferChunk& chunk = chunks[chunks.size()-1];
+            chunk.data.write(buf, l);
+        }
+        fclose(fp);
+    }
+    routerId source;
+    routerId destination;
+    unsigned long sessionID;
+    Stopwatch timer;
+    bool ack_sent = false;
+    std::string filename;
+    std::vector<OutgoingFileTransferChunk> chunks;
+};
+
+
+std::map<std::pair<routerId, unsigned long>, std::unique_ptr<IncomingFileTransfer>> incomingFileTransfers;
+Monitor incomingFileTransfersLock;
+std::map<unsigned long, std::unique_ptr<OutgoingFileTransfer>> outgoingFileTransfers;
+Monitor outgoingFileTransfersLock;
+
 class WorkerThread : public WorkerService<IncomingMessage>{
 public:
     WorkerThread(std::shared_ptr<RoutingTable> rt) : _table(rt) {
@@ -480,16 +530,59 @@ public:
         struct HandleFileInit : public RouterMessageHandler{
             void operator()(RouterMessage& message, TcpSocket* socket){
                 unsigned long sessionID = message.getSessionID();
-                printf("Success (%s, %i, %s)\n", message.routerID.c_str(), sessionID, message.payload.data);
-                RouterMessage msg;
-                msg.routerID = thisTable->getThis();
-                msg.packetType = MessageType::FileChunk;
-                std::string s = "FILE_CHUNK";
-                size_t len = s.size();
-                msg.payload.write((char*)s.c_str(), len+1);
-                msg.addSessionID(sessionID);
-                //thisMessagePusher->push(MessageToPushToSocket(socket, msg));
-                thisMessagePusher->schedule(MessageToPush(message.routerID, msg));
+                int index=0;
+                size_t l;
+                char* buf;
+
+                message.payload.read(&l, sizeof(l), index); // read source
+                buf = new char[l+1];
+                message.payload.read(buf, l, index);
+                std::string source(buf, l);
+                delete buf;
+
+                message.payload.read(&l, sizeof(l), index); // read destination
+                buf = new char[l+1];
+                message.payload.read(buf, l, index);
+                std::string destination(buf, l);
+                delete buf;
+                
+                if(destination!=thisTable->getThis()){
+                    // retransmit to next hop
+                    printf("Routing FileInit message\n");
+
+                    RouterMessage rmsg = message;
+                    rmsg.routerID = thisTable->getThis();
+                    routerId dest = thisTable->nextHop(destination);
+                    thisMessagePusher->schedule(MessageToPush(dest, rmsg));
+                    return;
+                }
+                
+                message.payload.read(&l, sizeof(l), index); // read filename
+                buf = new char[l+1];
+                message.payload.read(buf, l, index);
+                std::string filename(buf, l);
+                delete buf;
+                
+                unsigned int n_chunks;
+                message.payload.read(&n_chunks, sizeof(n_chunks), index);
+                
+                printf("FIle init from %s to %s, spanning %i chunks\n", source.c_str(), destination.c_str(), n_chunks);
+
+                // return response
+                RouterMessage rmsg;
+                rmsg.routerID = thisTable->getThis();
+                rmsg.packetType = MessageType::FileInit_Response;
+                rmsg.addSessionID(sessionID);
+
+                l = destination.size(); // destination
+                rmsg.payload.write(&l, sizeof(l));
+                rmsg.payload.write(destination.c_str(), l);
+
+                l = source.size();  //  source
+                rmsg.payload.write(&l, sizeof(l));
+                rmsg.payload.write(source.c_str(), l);
+                
+                thisMessagePusher->schedule(MessageToPush(thisTable->nextHop(source), rmsg));
             }
         };
         struct HandleFileChunk : public RouterMessageHandler {
@@ -584,7 +677,41 @@ public:
         };
 		struct HandleFileInit_Response : public RouterMessageHandler {
             void operator()(RouterMessage& message, TcpSocket* socket){
-                printf("Success (%s, %i, %s)\n", message.routerID.c_str(), message.packetType, message.payload.data);
+
+                unsigned long sessionID = message.getSessionID();
+                int index=0;
+                size_t l;
+                char* buf;
+
+                message.payload.read(&l, sizeof(l), index); // read source
+                buf = new char[l+1];
+                message.payload.read(buf, l, index);
+                std::string source(buf, l);
+                delete buf;
+                
+                message.payload.read(&l, sizeof(l), index); // read destination
+                buf = new char[l+1];
+                message.payload.read(buf, l, index);
+                std::string destination(buf, l);
+                delete buf;
+                
+                
+                if(destination!=thisTable->getThis()){
+                    // retransmit to next hop
+                    printf("Routing FileInit_Response message\n");
+                    RouterMessage rmsg = message;
+                    rmsg.routerID = thisTable->getThis();
+                    routerId dest = thisTable->nextHop(destination);
+                    thisMessagePusher->schedule(MessageToPush(dest, rmsg));
+                    return;
+                }
+                
+                outgoingFileTransfersLock.lock();
+                auto& file = outgoingFileTransfers[sessionID];
+                file->ack_sent = true;
+                outgoingFileTransfersLock.unlock();
+                printf("File transfer init acknowledged\n");
+
             }
         };
 		struct HandleFileChunk_Response : public RouterMessageHandler {
@@ -623,7 +750,6 @@ public:
     std::map<int, RouterMessageHandler*> handlers;
 private:
 	std::shared_ptr<RoutingTable> _table;
-
 	// for sending link association, alive, and cost messages
 	// also for retransmitting unacked file chunks
 	void intervalTasks() override {
@@ -694,6 +820,60 @@ private:
         }
         // for each outgoingFile():
         //   if (time > ackInterval) { resendFileChunks(); }
+        outgoingFileTransfersLock.lock();
+        std::vector<unsigned long> filesComplete;
+        for(auto& file : outgoingFileTransfers){
+            if(file.second->ack_sent){
+                bool file_sent = true;
+                /*for(auto& chunk : file.second.chunks){
+                    if(!chunk.ack_sent){
+                        file_sent = false;
+                        if(chunk.timer.elapsed()>5000){
+                            RouterMessage rmsg;
+                            rmsg.routerID = thisTable->getThis();
+                            //rmsg.routerIP = file.second.destination;
+                            rmsg.packetType = MessageType::FileChunk;
+                            thisMessagePusher->schedule(MessageToPush(dest, rmsg));
+                            chunk.timer.start();
+                            
+                        }
+                    }
+                }*/
+                filesComplete.push_back(file.first);
+            } else {
+                if(file.second->timer.elapsed()>5000){
+                    RouterMessage rmsg;
+                    size_t l;
+                    rmsg.routerID = thisTable->getThis();
+                    rmsg.packetType = MessageType::FileInit;
+                    rmsg.addSessionID(file.first); // session id
+                    
+                    l = thisTable->getThis().size();  //  source
+                    rmsg.payload.write(&l, sizeof(l));
+                    rmsg.payload.write(thisTable->getThis().c_str(), l);
+                    
+                    l = file.second->destination.size(); // destination
+                    rmsg.payload.write(&l, sizeof(l));
+                    rmsg.payload.write(file.second->destination.c_str(), l);
+                    
+                    l = file.second->filename.size(); // filename
+                    rmsg.payload.write(&l, sizeof(l));
+                    rmsg.payload.write(file.second->filename.c_str(), l);
+                    
+                    unsigned int n_chunks = file.second->chunks.size(); // number of chunks
+                    rmsg.payload.write(&n_chunks, sizeof(n_chunks));
+                    
+                    routerId dest = thisTable->nextHop(file.second->destination);
+                    thisMessagePusher->schedule(MessageToPush(dest, rmsg));
+                    file.second->timer.start();
+                    
+                }
+            }
+        }
+        for(auto& f : filesComplete){
+            outgoingFileTransfers.erase(f);
+        }
+        outgoingFileTransfersLock.unlock();
 	}
 
     void executeTask(IncomingMessage& item){
@@ -769,22 +949,31 @@ public:
             {
                 // --------------------- TEST ---------------------
                 std::string destination;
+                std::string filename;
                 std::istringstream iss;
                 iss.str(line.substr(3));
-                if (!(iss >> destination)) {
+                if (!(iss >> filename >> destination)) {
                     std::cout << "Invalid arguments, type \"help\" for usage." << std::endl;
                     continue;
                 }
                 printf("Sending FileInit message to %s ...\n", destination.c_str());
                 
-                RouterMessage msg;
+                /*RouterMessage msg;
                 msg.routerID = _table->getThis();
                 msg.packetType = MessageType::FileInit;
                 std::string s = "FILE_DATA";
                 size_t len = s.size();
                 msg.payload.write((char*)s.c_str(), len+1);
                 msg.addSessionID(sessionManager.getSessionID());
-                _messagePusher->schedule(MessageToPush(destination, msg));
+                _messagePusher->schedule(MessageToPush(destination, msg));*/
+                
+                
+                outgoingFileTransfersLock.lock();
+                auto& file = outgoingFileTransfers[sessionManager.getSessionID()];
+                file = std::unique_ptr<OutgoingFileTransfer>(new OutgoingFileTransfer(filename));
+                file->destination = destination;
+                file->source = _table->getThis();
+                outgoingFileTransfersLock.unlock();
                 
                 // --------------------- /TEST ---------------------
                 //break; //TODO
