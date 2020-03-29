@@ -922,7 +922,7 @@ private:
             switch (link.state) {
             case NEW:
             case DEAD:
-                if (link.helloInterval.elapsed() > link.helloInt) {
+                if (link.helloInterval.elapsed() > link.helloInt * 1000) {
                     RouterMessage msg;
                     msg.routerID = thisTable->getThis();
                     msg.packetType = MessageType::BeNeighbor;
@@ -941,7 +941,7 @@ private:
             case HELLO_UPDATE:
                 // we didn't get a BeNeighbor_Response or Alive_Response in time
                 // take the link offline for a little while
-                if (link.helloSent.elapsed() > link.helloInt) {
+                if (link.helloSent.elapsed() > link.helloInt * 1000) {
                     logger << "BeNeighbor/Alive check timed out on link " << ll.first
                         << ". Clearing link and scheduling retry.";
                     link.helloInterval.start();
@@ -957,8 +957,8 @@ private:
                     std::cout << "Retransmitting unACK'd LSA message." << std::endl;
                     thisMessagePusher->schedule(MessageToPush(link.dest, *(LSA_msg.second)));
                 }*/
-                /*if(link.helloInterval.elapsed()>link.helloInt){
-                    std::cout << "Sending Alive message." << std::endl;
+                if(link.helloInterval.elapsed() > link.helloInt * 1000){
+                    logger << "Sending Alive message out on link " << ll.first;
                     RouterMessage msg;
                     msg.routerID = thisTable->getThis();
                     msg.packetType = MessageType::Alive;
@@ -967,8 +967,8 @@ private:
                     link.helloSent.start();
                     link.state = HELLO_UPDATE;
                     continue;
-                }*/
-                /*if(link.updateInterval.elapsed()>link.updateInt){
+                }
+                /*if(link.updateInterval.elapsed()>link.updateInt * 1000){
                     RouterMessage msg;
                     msg.routerID = thisTable->getThis();
                     msg.packetType = MessageType::Alive;

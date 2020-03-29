@@ -30,12 +30,11 @@ public:
             if (dest == i->first) {
                 if (weight == 0) {
                     // delete
-                    _graph[_localRouter].erase(i);
-                    _updateCostTable();
-                    return;
+                    _graph[_localRouter].erase(i, i+1);
+                } else {
+                    // update
+                    i->second = weight;
                 }
-                // update
-                i->second = weight;
                 _updateCostTable();
                 return;
             }
