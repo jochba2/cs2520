@@ -1456,7 +1456,7 @@ private:
 
 void usage() {
     std::cout << "Usage: ./routed <router_ip> <file_dir> ";
-    std::cout << "[link_list=<file_path>] [corrupt_msgs] [auto_start]\n\n";
+    std::cout << "[link_list=<file_path>] [corrupt_msgs] [auto_start] [log_file=<file_path>]\n\n";
     std::cout << "<router_ip> - The IP address and ID assigned to this router\n";
     std::cout << "<file_dir> - Absolute path to the directory to send/recv files\n";
     std::cout << "[link_list=<file_path>] - Absolute path to a file with links to add to router\n";

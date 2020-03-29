@@ -7,18 +7,21 @@ services:
     command:
       - "./routed"
       - "172.16.238.10"
-      - "/file_dir"
-      - "link_list=/topo/links_10.txt"
+      - "/files"
+      - "link_list=/topo/small_10.txt"
       - "corrupt_msgs=1"
       - "auto_start=1"
-      - "log_file=/out/10.log"
+      - "log_file=/logs/10.log"
     networks:
       router-net:
         ipv4_address: 172.16.238.10
     volumes:
       - type: bind
-        source: ./out
-        target: /out
+        source: ./logs
+        target: /logs
+      - type: bind
+        source: ./files/10
+        target: /files
   routed_20:
     build: .
     stdin_open: true
@@ -26,18 +29,21 @@ services:
     command:
       - "./routed"
       - "172.16.238.20"
-      - "/file_dir"
-      - "link_list=/topo/links_20.txt"
+      - "/files"
+      - "link_list=/topo/small_20.txt"
       - "corrupt_msgs=1"
       - "auto_start=1"
-      - "log_file=/out/20.log"
+      - "log_file=/logs/20.log"
     networks:
       router-net:
         ipv4_address: 172.16.238.20
     volumes:
       - type: bind
-        source: ./out
-        target: /out
+        source: ./logs
+        target: /logs
+      - type: bind
+        source: ./files/20
+        target: /files
   routed_30:
     build: .
     stdin_open: true
@@ -45,18 +51,21 @@ services:
     command:
       - "./routed"
       - "172.16.238.30"
-      - "/file_dir"
-      - "link_list=/topo/links_30.txt"
+      - "/files"
+      - "link_list=/topo/small_30.txt"
       - "corrupt_msgs=1"
       - "auto_start=1"
-      - "log_file=/out/30.log"
+      - "log_file=/logs/30.log"
     networks:
       router-net:
         ipv4_address: 172.16.238.30
     volumes:
       - type: bind
-        source: ./out
-        target: /out
+        source: ./logs
+        target: /logs
+      - type: bind
+        source: ./files/30
+        target: /files
 networks:
   router-net:
     ipam:

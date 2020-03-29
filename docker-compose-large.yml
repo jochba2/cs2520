@@ -1,0 +1,140 @@
+version: "3.7"
+services:
+  routed_10:
+    build: .
+    stdin_open: true
+    tty: true
+    command:
+      - "./routed"
+      - "172.16.238.10"
+      - "/files"
+      - "link_list=/topo/large_10.txt"
+      - "corrupt_msgs=1"
+      - "auto_start=1"
+      - "log_file=/logs/10.log"
+    networks:
+      router-net:
+        ipv4_address: 172.16.238.10
+    volumes:
+      - type: bind
+        source: ./logs
+        target: /logs
+      - type: bind
+        source: ./files/10
+        target: /files
+  routed_20:
+    build: .
+    stdin_open: true
+    tty: true
+    command:
+      - "./routed"
+      - "172.16.238.20"
+      - "/files"
+      - "link_list=/topo/large_20.txt"
+      - "corrupt_msgs=1"
+      - "auto_start=1"
+      - "log_file=/logs/20.log"
+    networks:
+      router-net:
+        ipv4_address: 172.16.238.20
+    volumes:
+      - type: bind
+        source: ./logs
+        target: /logs
+      - type: bind
+        source: ./files/20
+        target: /files
+  routed_30:
+    build: .
+    stdin_open: true
+    tty: true
+    command:
+      - "./routed"
+      - "172.16.238.30"
+      - "/files"
+      - "link_list=/topo/large_30.txt"
+      - "corrupt_msgs=1"
+      - "auto_start=1"
+      - "log_file=/logs/30.log"
+    networks:
+      router-net:
+        ipv4_address: 172.16.238.30
+    volumes:
+      - type: bind
+        source: ./logs
+        target: /logs
+      - type: bind
+        source: ./files/30
+        target: /files
+  routed_40:
+    build: .
+    stdin_open: true
+    tty: true
+    command:
+      - "./routed"
+      - "172.16.238.40"
+      - "/files"
+      - "link_list=/topo/large_40.txt"
+      - "corrupt_msgs=1"
+      - "auto_start=1"
+      - "log_file=/logs/40.log"
+    networks:
+      router-net:
+        ipv4_address: 172.16.238.40
+    volumes:
+      - type: bind
+        source: ./logs
+        target: /logs
+      - type: bind
+        source: ./files/40
+        target: /files
+  routed_50:
+    build: .
+    stdin_open: true
+    tty: true
+    command:
+      - "./routed"
+      - "172.16.238.50"
+      - "/files"
+      - "link_list=/topo/large_50.txt"
+      - "corrupt_msgs=1"
+      - "auto_start=1"
+      - "log_file=/logs/50.log"
+    networks:
+      router-net:
+        ipv4_address: 172.16.238.50
+    volumes:
+      - type: bind
+        source: ./logs
+        target: /logs
+      - type: bind
+        source: ./files/50
+        target: /files
+  routed_60:
+    build: .
+    stdin_open: true
+    tty: true
+    command:
+      - "./routed"
+      - "172.16.238.60"
+      - "/files"
+      - "link_list=/topo/large_60.txt"
+      - "corrupt_msgs=1"
+      - "auto_start=1"
+      - "log_file=/logs/60.log"
+    networks:
+      router-net:
+        ipv4_address: 172.16.238.60
+    volumes:
+      - type: bind
+        source: ./logs
+        target: /logs
+      - type: bind
+        source: ./files/60
+        target: /files
+networks:
+  router-net:
+    ipam:
+      driver: default
+      config:
+        - subnet: "172.16.238.0/24"
