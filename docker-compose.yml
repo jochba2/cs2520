@@ -1,4 +1,4 @@
-version: "3"
+version: "3.7"
 services:
   routed_10:
     build: .
@@ -11,9 +11,14 @@ services:
       - "link_list=/topo/links_10.txt"
       - "corrupt_msgs=1"
       - "auto_start=1"
+      - "log_file=/out/10.log"
     networks:
       router-net:
         ipv4_address: 172.16.238.10
+    volumes:
+      - type: bind
+        source: ./out
+        target: /out
   routed_20:
     build: .
     stdin_open: true
@@ -25,9 +30,14 @@ services:
       - "link_list=/topo/links_20.txt"
       - "corrupt_msgs=1"
       - "auto_start=1"
+      - "log_file=/out/20.log"
     networks:
       router-net:
         ipv4_address: 172.16.238.20
+    volumes:
+      - type: bind
+        source: ./out
+        target: /out
   routed_30:
     build: .
     stdin_open: true
@@ -39,9 +49,14 @@ services:
       - "link_list=/topo/links_30.txt"
       - "corrupt_msgs=1"
       - "auto_start=1"
+      - "log_file=/out/30.log"
     networks:
       router-net:
         ipv4_address: 172.16.238.30
+    volumes:
+      - type: bind
+        source: ./out
+        target: /out
 networks:
   router-net:
     ipam:

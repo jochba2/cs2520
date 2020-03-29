@@ -5,6 +5,7 @@
 #include <map>
 #include <vector>
 #include <memory>
+#include <ctime>
 
 /*                    .--------- COST_UPDATE -------------.
  *                    V                ^                  |
@@ -65,10 +66,72 @@ namespace MessageType{
     }
 };
 
+std::shared_ptr<RoutingTable> thisTable;
+
+class LogMsg {
+public:
+    LogMsg(std::ostream& s, Monitor* lck) : _out_stream(s), _lck(lck) {}
+    ~LogMsg() { _lck->unlock(); }
+    template<typename Streamable>
+    std::ostream& operator<< (const Streamable& data) {
+        _out_stream << data;
+        return _out_stream;
+    }
+private:
+    std::ostream& _out_stream;
+    Monitor* _lck;
+};
+
 class Log{
 public:
-    void write(const std::string& msg){
-        printf("%s\n", msg.c_str());
+    Log(std::ostream& s = std::cerr) : _file_ptr(NULL) {
+        _out_stream = new std::ostream(s.rdbuf());
+    }
+    ~Log() {
+        if (_file_ptr != NULL) {
+            _file_ptr->close();
+            delete _file_ptr;
+            delete _out_stream;
+        }
+    }
+    void setLogFile(const std::string& path) {
+        _file_ptr = new std::ofstream(path.c_str(), std::ofstream::out);
+        delete _out_stream;
+        _out_stream = new std::ostream(_file_ptr->rdbuf());
+    }
+    LogMsg messageIn(const RouterMessage& msg) {
+        _lck.lock();
+        *_out_stream << std::endl << "[" << now() << "] "
+                     << "[" << MessageType::get(msg.packetType) << ": "
+                     << msg.routerID << " -> " << thisTable->getThis() << "]: ";
+        return LogMsg(*_out_stream, &_lck);
+    }
+    LogMsg messageOut(const RouterMessage& msg) {
+        _lck.lock();
+        *_out_stream << std:: endl << "[" << now() << "] "
+                     << "[" << MessageType::get(msg.packetType) << ": "
+                     << thisTable->getThis() << " -> " << msg.routerID << "]: ";
+        return LogMsg(*_out_stream, &_lck);
+    }
+    template<typename Streamable>
+    LogMsg operator<< (const Streamable& data) {
+        _lck.lock();
+        *_out_stream << std::endl << "[" << now() << "] " << data;
+        return LogMsg(*_out_stream, &_lck);
+    }
+private:
+    Monitor _lck;
+    std::ostream* _out_stream;
+    std::ofstream* _file_ptr;
+    std::string now() {
+        char str[100];
+        std::ostringstream s;
+        auto timet = std::time(nullptr);
+        auto time = std::localtime(&timet);
+        auto nano = std::clock();
+        std::strftime(str, sizeof(str), "%m/%d/%Y %H:%M:%S", time);
+        s << str << "." << nano;
+        return s.str();
     }
 }logger;
 
@@ -151,9 +214,7 @@ public:
                 //delete sock;
             }
         }catch(std::exception& ex){
-            std::stringstream msg;
-            msg << MessageType::get(item.second.packetType) << std::string(" packet connection to ") << item.first << std::string(" error ") << ex.what();
-            logger.write(msg.str());
+            logger.messageOut(item.second) << " packet connection to dest error: " << ex.what();
             if(sock)
                 delete sock;
             sock = NULL;
@@ -182,9 +243,7 @@ public:
                 //delete sock;
             }
         }catch(std::exception& ex){
-            std::stringstream msg;
-            msg << MessageType::get(item.second.packetType) << std::string(" packet connection to ") << item.first << std::string(" error ") << ex.what();
-            logger.write(msg.str());
+            logger.messageOut(item.second) << " packet connection to dest error: " << ex.what();
             //if(sock)
                 //delete sock;
         }
@@ -217,15 +276,11 @@ private:
         Buffer packet = msg.getPacket();
         if(_corruptMsgs){
             if(rand()%1000 < 50){ // 5% probability
-                std::stringstream m;
-                m << MessageType::get(msg.packetType) << std::string(" packet lost");
-                logger.write(m.str());
+                logger.messageOut(msg) << "Simulating lost packet.";
                 return 1; // lost packet
             }
             if(rand()%1000 < 100){ // 10% probability
-                std::stringstream m;
-                m << MessageType::get(msg.packetType) << std::string(" packet injecting error");
-                logger.write(m.str());
+                logger.messageOut(msg) << "Injecting packet error.";
                 packet.injectErrors(1); // bit flip
             }
         }
@@ -239,20 +294,16 @@ private:
                 if(sock->readMsg(response)){
                     switch(response){
                         case 0: // message accepted
-                            logger.write(std::string("Message sent"));
+                            logger.messageOut(msg) << "Sent.";
                         break;
                         case 1: // unknown packet type
                         {
-                            std::stringstream m;
-                            m << MessageType::get(msg.packetType) << std::string(" packet unrecognized");
-                            logger.write(m.str());
+                            logger.messageOut(msg) << "Receiver reports packet unrecognized.";
                         }
                         break;
                         case 2: // data integrity error
                         {
-                            std::stringstream m;
-                            m << MessageType::get(msg.packetType) << std::string(" packet corrupted. Retrying...");
-                            logger.write(m.str());
+                            logger.messageOut(msg) << "Receivier reports packet corrupted. Retrying...";
                             return 2;
                         }
                         break;
@@ -265,9 +316,7 @@ private:
             }
             return 0;
         }catch(std::exception& ex){
-            std::stringstream m;
-            m << MessageType::get(msg.packetType) << std::string(" packet transfer to ") << sock->host << std::string(" error ") << ex.what();
-            logger.write(m.str());
+            logger.messageOut(msg) << "Erorr during packet transfer to dest: " << ex.what();
             return 3;
         }
         return 0;
@@ -288,9 +337,7 @@ private:
                 sock = NULL;
             }
         }catch(std::exception& ex){
-            std::stringstream msg;
-            msg << MessageType::get(item.second.packetType) << std::string(" packet connection to ") << item.first << std::string(" error ") << ex.what();
-            logger.write(msg.str());
+            logger.messageOut(item.second) << "Connection to dest failed: " << ex.what();
             if(sock)
                 delete sock;
         }
@@ -304,10 +351,8 @@ private:
 
 std::shared_ptr<MessagePusher> thisMessagePusher;
 
-std::shared_ptr<RoutingTable> thisTable;
-
 void _sendLSA() {
-    std::cout << "Broadcasting LSA." << std::endl;
+    logger << "Broadcasting LSA.";
 
     // build message
     std::shared_ptr<RouterMessage> msgOut = std::make_shared<RouterMessage>();
@@ -347,7 +392,7 @@ void _sendLSA() {
 }
 
 void _sendLSA_Ack(const routerId& dest, unsigned long seqNum) {
-    std::cout << "Sending LSA_Response." << std::endl;
+    logger << "Sending LSA_Response.";
     RouterMessage msgOut;
     msgOut.routerID = thisTable->getThis();
     msgOut.packetType = MessageType::LSA_Response;
@@ -360,7 +405,7 @@ void _sendLSA_Ack(const routerId& dest, unsigned long seqNum) {
 
 void _forwardLSA(const RouterMessage& msgIn, unsigned long seqNum) {
     // copy message
-    std::cout << "Forwarding LSA message to neighbors." << std::endl;
+    logger << "Forwarding LSA message to neighbors.";
     std::shared_ptr<RouterMessage> msgOut = std::make_shared<RouterMessage>();
     msgOut->routerID = thisTable->getThis();
     msgOut->packetType = MessageType::LSA;
@@ -401,7 +446,7 @@ public:
     OutgoingFileTransfer(const std::string& filename){
         this->filename = filename;
         std::string filepath = homeDirectory + filename;
-        printf("[%s]\n", filepath.c_str());
+        logger << "Opening file \"" << filepath << "\" for transfer.";
         FILE *fp = fopen(filepath.c_str(), "rb");
         if(!fp)
             throw std::runtime_error("File not found");
@@ -445,23 +490,23 @@ public:
          */
         struct HandleBeNeighbor : public RouterMessageHandler{
             void operator()(RouterMessage& message, TcpSocket* socket){
-                printf("Success (%s, %i, %s)\n", message.routerID.c_str(), message.packetType, message.payload.data);
                 int versionIn;
                 std::istringstream iss;
                 iss.str((char*)message.payload.data);
                 if (!(iss >> versionIn)) {
-                    std::cout << "Couldn't parse BeNeighbor message. Ignoring." << std::endl;
+                    logger.messageIn(message) << "Couldn't parse BeNeighbor message. Ignoring.";
                     return;
                 }
                 std::string response = "1";
                 if (versionIn != version) {
-                    std::cout << "Version mismatch. Refusing connection." << std::endl;
+                    logger.messageIn(message) << "Version mismatch. Refusing connection.";
                     response = "0";
                 }
                 RouterMessage msgOut;
                 msgOut.routerID = thisTable->getThis();
                 msgOut.packetType = MessageType::BeNeighbor_Response;
                 msgOut.payload.write(response.c_str(), response.size() + 1);
+                logger.messageIn(message) << "Responding with: " << response;
                 thisMessagePusher->schedule(MessageToPush(message.routerID, msgOut));
             }
         };
@@ -475,13 +520,10 @@ public:
         };
         struct HandleLinkCostPing : public RouterMessageHandler{
             void operator()(RouterMessage& message, TcpSocket* socket){
-                printf("Success (%s, %i, %s)\n", message.routerID.c_str(), message.packetType, message.payload.data);
-            }
+           }
         };
         struct HandleLSA : public RouterMessageHandler {
             void operator()(RouterMessage& message, TcpSocket* socket){
-                printf("Success (%s, %i, %s)\n", message.routerID.c_str(), message.packetType, message.payload.data);
-
                 // parse
                 linkList newLinks;
                 routerId advertisingRID;
@@ -490,11 +532,11 @@ public:
                 std::istringstream iss;
                 iss.str((char*)message.payload.data);
                 if (!(iss >> advertisingRID >> seqNum >> numLinks)) {
-                    std::cout << "Couldn't parse LSA message header. Ignoring." << std::endl;
+                    logger.messageIn(message) << "Couldn't parse LSA message header. Ignoring.";
                     return;
                 }
                 if (advertisingRID == thisTable->getThis()) {
-                    std::cout << "Got LSA with self as advertising router. Ignoring." << std::endl;
+                    logger.messageIn(message) << "Got LSA with self as advertising router. Ignoring.";
                     return;
                 }
                 std::string linkID;
@@ -505,17 +547,17 @@ public:
                     numLinks--;
                 }
                 if (numLinks) {
-                    std::cout << "Couldn't parse LSA message body. Ignoring." << std::endl;
+                    logger.messageIn(message) << "Couldn't parse LSA message body. Ignoring.";
                     return;
                 }
 
                 // ack
-                std::cout << "Got LSA message." << std::endl;
                 _sendLSA_Ack(message.routerID, seqNum);
 
                 // ignore duplicates (handle cycles in network)
                 if (lastSeqNums.count(advertisingRID) && lastSeqNums[advertisingRID] <= seqNum) {
-                    std::cout << "Got duplicate LSA. Ignoring." << std::endl;
+                    logger.messageIn(message) << "Got duplicate LSA (current version: "
+                        << lastSeqNums[advertisingRID] << "). Ignoring." << std::endl;
                     return;
                 } else {
                     lastSeqNums[advertisingRID] = seqNum;
@@ -527,7 +569,7 @@ public:
                 // update our graph & paths
                 tableMonitor.lock();
                 thisTable->updateLinks(advertisingRID, newLinks);
-                std::cout << "Network Graph:\n" << thisTable->printGraph();
+                logger.messageIn(message) << "DEBUG Network Graph:\n" << thisTable->printGraph();
                 tableMonitor.unlock();
             }
         };
@@ -552,7 +594,7 @@ public:
                 
                 if(destination!=thisTable->getThis()){
                     // retransmit to next hop
-                    printf("Routing FileInit message\n");
+                    logger.messageIn(message) << "Routing FileInit message";
 
                     RouterMessage rmsg = message;
                     rmsg.routerID = thisTable->getThis();
@@ -570,7 +612,7 @@ public:
                 unsigned int n_chunks;
                 message.payload.read(&n_chunks, sizeof(n_chunks), index); // read number of chunks
                 
-                printf("FIle init from %s to %s, spanning %i chunks\n", source.c_str(), destination.c_str(), n_chunks);
+                logger.messageIn(message) << "File init from " << source << " to " << destination << ", spanning " << n_chunks << " chunks.";
                 
                 incomingFileTransfersLock.lock();
                 auto& file = incomingFileTransfers[std::pair<routerId, unsigned long>(source, sessionID)];
@@ -616,7 +658,7 @@ public:
                 
                 if(destination!=thisTable->getThis()){
                     // retransmit to next hop
-                    printf("Routing FileChunk message\n");
+                    logger.messageIn(message) << "Routing FileChunk message";
 
                     RouterMessage rmsg = message;
                     rmsg.routerID = thisTable->getThis();
@@ -643,9 +685,7 @@ public:
                             file_complete = false;
                     }
                     if(file_complete){
-                        std::stringstream msg;
-                        msg << std::string("File ") << file->filename << std::string(" received successfully");
-                        logger.write(msg.str());
+                        logger.messageIn(message) << "File " << file->filename << " received successfully.";
                         std::string filepath = homeDirectory + file->filename;
                         FILE *fp = fopen(filepath.c_str(), "wb");
                         if(fp){
@@ -661,7 +701,7 @@ public:
                 
                 // TODO
                 
-                printf("File chunk %i\n", seqnum);
+                logger.messageIn(message) << "File chunk " << seqnum;
                 
                 
 
@@ -688,7 +728,6 @@ public:
         struct HandleFileAck : public RouterMessageHandler {
             void operator()(RouterMessage& message, TcpSocket* socket){
                 unsigned long sessionID = message.getSessionID();
-                printf("Success (%s, %i, %s)\n", message.routerID.c_str(), sessionID, message.payload.data);
                 sessionManager.retireSessionID(sessionID);
             }
         };
@@ -701,7 +740,6 @@ public:
 		 */
         struct HandleBeNeighbor_Response : public RouterMessageHandler{
             void operator()(RouterMessage& message, TcpSocket* socket){
-                printf("Success (%s, %i, %s)\n", message.routerID.c_str(), message.packetType, message.payload.data);
                 bool found = false;
                 auto ll = localLinks.begin();
                 for (; ll != localLinks.end(); ++ll) {
@@ -711,33 +749,32 @@ public:
                     }
                 }
                 if (!found) {
-                    std::cout << "Got message on unkown link. Ignoring." << std::endl;
+                    logger.messageIn(message) << "Got message about unkown link. Ignoring.";
                     return;
                 }
                 LocalLink& link = ll->second;
                 link.helloInterval.start();
                 std::string response;
                 if (message.payload.data[0] != '1') {
-                    std::cout << "Neighbor refused request, retrying later." << std::endl;
+                    logger.messageIn(message) << "Neighbor refused request, retrying later.";
                     link.state = DEAD;
                     return;
                 }
-                std::cout << "Neighbor '" << link.dest << "' accepted." << std::endl;
+                logger.messageIn(message) << "Neighbor '" << link.dest << "' accepted.";
                 link.updateInterval.start();
                 link.state = ALIVE;
                 tableMonitor.lock();
                 thisTable->updateMyLink(link.dest, link.cost);
-                std::cout << "Network Graph:\n" << thisTable->printGraph();
+                logger.messageIn(message) << "DEBUG Network Graph:\n" << thisTable->printGraph();
                 tableMonitor.unlock();
                 _sendLSA();
             }
         };
 		struct HandleAlive_Response : public RouterMessageHandler {
             void operator()(RouterMessage& message, TcpSocket* socket){
-                printf("Success (%s, %i, %s)\n", message.routerID.c_str(), message.packetType, message.payload.data);
                 for (auto& ll : localLinks) {
                     if (ll.second.dest == message.routerID) {
-                        std::cout << "Confirmed link is alive." << std::endl;
+                        logger.messageIn(message) << "Confirmed link " << ll.first << " is alive.";
                         ll.second.helloInterval.start();
                         ll.second.state = ALIVE;
                         break;
@@ -747,22 +784,20 @@ public:
         };
         struct HandleLinkCostPing_Response : public RouterMessageHandler{
             void operator()(RouterMessage& message, TcpSocket* socket){
-                printf("Success (%s, %i, %s)\n", message.routerID.c_str(), message.packetType, message.payload.data);
             }
         };
 		struct HandleLSA_Response : public RouterMessageHandler {
             void operator()(RouterMessage& message, TcpSocket* socket){
-                printf("Success (%s, %i, %s)\n", message.routerID.c_str(), message.packetType, message.payload.data);
                 unsigned long seqNumIn;
                 std::istringstream iss;
                 iss.str((char*)message.payload.data);
                 if (!(iss >> seqNumIn)) {
-                    std::cout << "Couldn't parse LSA_Response message. Ignoring." << std::endl;
+                    logger.messageIn(message) << "Couldn't parse LSA_Response message. Ignoring.";
                     return;
                 }
-                std::cout << "Got LSA_Response." << std::endl;
                 for (auto& ll : localLinks) {
                     if (ll.second.dest == message.routerID) {
+                        logger.messageIn(message) << "LSA marked as accepted.";
                         ll.second.pending_LSAs.erase(seqNumIn);
                     }
                 }
@@ -790,7 +825,7 @@ public:
                 
                 if(destination!=thisTable->getThis()){
                     // retransmit to next hop
-                    printf("Routing FileInit_Response message\n");
+                    logger.messageIn(message) << "Routing FileInit_Response message";
                     RouterMessage rmsg = message;
                     rmsg.routerID = thisTable->getThis();
                     routerId dest = thisTable->nextHop(destination);
@@ -802,7 +837,7 @@ public:
                 auto& file = outgoingFileTransfers[sessionID];
                 file->ack_sent = true;
                 outgoingFileTransfersLock.unlock();
-                printf("File transfer init acknowledged\n");
+                logger.messageIn(message) << "File transfer init acknowledged";
             }
         };
 		struct HandleFileChunk_Response : public RouterMessageHandler {
@@ -827,7 +862,7 @@ public:
                 
                 if(destination!=thisTable->getThis()){
                     // retransmit to next hop
-                    printf("Routing FileChunk_Response message\n");
+                    logger.messageIn(message) << "Routing FileChunk_Response message";
                     RouterMessage rmsg = message;
                     rmsg.routerID = thisTable->getThis();
                     routerId dest = thisTable->nextHop(destination);
@@ -844,12 +879,11 @@ public:
                 auto& chunk = file->chunks[seqnum];
                 chunk.ack_sent = true;
                 outgoingFileTransfersLock.unlock();
-                printf("File transfer chunk %i acknowledged\n", seqnum);
+                logger.messageIn(message) << "File transfer chunk " << seqnum << " acknowledged.";
             }
         };
 		struct HandleFileAck_Response : public RouterMessageHandler {
             void operator()(RouterMessage& message, TcpSocket* socket){
-                printf("Success (%s, %i, %s)\n", message.routerID.c_str(), message.packetType, message.payload.data);
             }
         };
 
@@ -895,7 +929,8 @@ private:
                     oss << version;
                     std::string body = oss.str();
                     msg.payload.write(body.c_str(), body.size() + 1);
-                    std::cout << "Sending BeNeighbor request to '" << dest << "'." << std::endl;
+                    logger << "Sending BeNeighbor request to '" << dest
+                        << "' on link " << ll.first << ".";
                     thisMessagePusher->schedule(MessageToPush(dest, msg));
                     link.helloSent.start();
                     link.state = ACQUISITION;
@@ -906,7 +941,8 @@ private:
                 // we didn't get a BeNeighbor_Response or Alive_Response in time
                 // take the link offline for a little while
                 if (link.helloSent.elapsed() > link.helloInt) {
-                    std::cout << "BeNeighbor/Alive check timed out. Clearing link and scheduling retry." << std::endl;
+                    logger << "BeNeighbor/Alive check timed out on link " << ll.first
+                        << ". Clearing link and scheduling retry.";
                     link.helloInterval.start();
                     link.state = DEAD;
                     tableMonitor.lock();
@@ -920,7 +956,7 @@ private:
                     std::cout << "Retransmitting unACK'd LSA message." << std::endl;
                     thisMessagePusher->schedule(MessageToPush(link.dest, *(LSA_msg.second)));
                 }*/
-                if(link.helloInterval.elapsed()>link.helloInt){
+                /*if(link.helloInterval.elapsed()>link.helloInt){
                     std::cout << "Sending Alive message." << std::endl;
                     RouterMessage msg;
                     msg.routerID = thisTable->getThis();
@@ -930,7 +966,7 @@ private:
                     link.helloSent.start();
                     link.state = HELLO_UPDATE;
                     continue;
-                }
+                }*/
                 /*if(link.updateInterval.elapsed()>link.updateInt){
                     RouterMessage msg;
                     msg.routerID = thisTable->getThis();
@@ -1019,9 +1055,7 @@ private:
         }
         for(auto& f : filesComplete){
             auto& file = outgoingFileTransfers[f];
-            std::stringstream msg;
-            msg << std::string("File ") << file->filename << std::string(" sent successfully");
-            logger.write(msg.str());
+            logger << "File " << file->filename << " sent successfully.";
             outgoingFileTransfers.erase(f);
         }
         outgoingFileTransfersLock.unlock();
@@ -1033,18 +1067,16 @@ private:
         int response = 0;
         if(rmsg.readFrom(&item.buffer)){
             if(handlers.find(rmsg.packetType)!=handlers.end()){
-                std::stringstream msg;
-                msg << std::string("Received ") << MessageType::get(rmsg.packetType) << std::string(" packet from ") << rmsg.routerID;
-                logger.write(msg.str());
+                logger.messageIn(rmsg) << "Body: " << rmsg.payload.data;
                 (*handlers[rmsg.packetType])(rmsg, item.socket);
                 response = 0;
             } else {
                 response = 1;
-                logger.write(std::string("Received unrecognized packet"));
+                logger.messageIn(rmsg) << "Unrecognized packet";
             }
         } else {
             response = 2;
-            logger.write(std::string("Received corrupt packet"));
+            logger.messageIn(rmsg) << "Corrupt packet";
         }
         
         item.socket->writeMsg(response);
@@ -1098,7 +1130,6 @@ public:
                 start();
             else if (line.find("scp") != std::string::npos)
             {
-                // --------------------- TEST ---------------------
                 std::string destination;
                 std::string filename;
                 std::istringstream iss;
@@ -1125,9 +1156,6 @@ public:
                 file->destination = destination;
                 file->source = _table->getThis();
                 outgoingFileTransfersLock.unlock();
-                
-                // --------------------- /TEST ---------------------
-                //break; //TODO
             }
             else if (line.find("set-version") != std::string::npos)
                 _setVersion(line.substr(11));
@@ -1324,17 +1352,18 @@ void usage() {
     std::cout << "[link_list=<file_path>] - Absolute path to a file with links to add to router\n";
     std::cout << "[corrupt_msgs=<bool>] - 1 to simulate packet and network errors (default: 0)\n";
     std::cout << "[auto_start=<bool>] - start router automatically (default: 0)\n";
+    std::cout << "[log_file=<file_path>] - Absolute path to a file to write logs to (default: stderr)\n";
 }
 
 int main(int args, char** argv){
-    if (args < 3 || args > 6) {
+    if (args < 3 || args > 7) {
         usage();
         return 1;
     }
 
     std::string routerIP(argv[1]);
     std::string fileDir(argv[2]);
-    std::string linkFile;
+    std::string linkFile, logFile;
     unsigned short port = default_port;
     bool corruptMsgs = false;
     bool autoStart = false;
@@ -1345,9 +1374,15 @@ int main(int args, char** argv){
             linkFile = argv[i] + 10;
         } else if (!strncmp(argv[i], "auto_start=", 11)) {
             autoStart = (argv[i][11] == '1');
+        } else if (!strncmp(argv[i], "log_file=", 9)) {
+            logFile = argv[i] + 9;
         }
     }
-    
+
+    if (logFile.size() != 0) {
+        logger.setLogFile(logFile);
+    }
+
     if(fileDir.size()==0){
         homeDirectory = std::string("./");
     } else {
