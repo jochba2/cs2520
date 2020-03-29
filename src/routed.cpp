@@ -103,14 +103,14 @@ public:
         _lck.lock();
         *_out_stream << std::endl << "[" << now() << "] "
                      << "[" << MessageType::get(msg.packetType) << ": "
-                     << msg.routerID << " -> " << thisTable->getThis() << "]: ";
+                     << thisTable->getThis() << " <- " << msg.routerID << "]: ";
         return LogMsg(*_out_stream, &_lck);
     }
-    LogMsg messageOut(const RouterMessage& msg) {
+    LogMsg messageOut(const RouterMessage& msg, const std::string& dest) {
         _lck.lock();
         *_out_stream << std:: endl << "[" << now() << "] "
                      << "[" << MessageType::get(msg.packetType) << ": "
-                     << thisTable->getThis() << " -> " << msg.routerID << "]: ";
+                     << thisTable->getThis() << " -> " << dest << "]: ";
         return LogMsg(*_out_stream, &_lck);
     }
     template<typename Streamable>
@@ -210,11 +210,11 @@ public:
         try{
             sock = client.connect();
             if(sock){
-                result = tryToSend(sock, item.second);
+                result = tryToSend(sock, item.second, item.first);
                 //delete sock;
             }
         }catch(std::exception& ex){
-            logger.messageOut(item.second) << " packet connection to dest error: " << ex.what();
+            logger.messageOut(item.second, item.first) << " packet connection to dest error: " << ex.what();
             if(sock)
                 delete sock;
             sock = NULL;
@@ -234,16 +234,16 @@ public:
         return NULL;
     }
 
-    bool push(const MessageToPushToSocket& item){
+    bool push(const MessageToPushToSocket& item, const routerId& src){
         TcpSocket* sock = item.first;
         int result = 3;
         try{
             if(sock){
-                result = tryToSend(sock, item.second);
+                result = tryToSend(sock, item.second, src);
                 //delete sock;
             }
         }catch(std::exception& ex){
-            logger.messageOut(item.second) << " packet connection to dest error: " << ex.what();
+            logger.messageOut(item.second, src) << " packet connection to dest error: " << ex.what();
             //if(sock)
                 //delete sock;
         }
@@ -268,7 +268,7 @@ public:
 private:
     bool _corruptMsgs;
     
-    int tryToSend(TcpSocket* sock, const RouterMessage& msg){
+    int tryToSend(TcpSocket* sock, const RouterMessage& msg, const routerId& src){
         // returns 0 for success
         // returns 1 for lost packet
         // returns 2 for corruption response
@@ -276,17 +276,18 @@ private:
         Buffer packet = msg.getPacket();
         if(_corruptMsgs){
             if(rand()%1000 < 50){ // 5% probability
-                logger.messageOut(msg) << "Simulating lost packet.";
+                logger.messageOut(msg, src) << "Simulating lost packet.";
                 return 1; // lost packet
             }
             if(rand()%1000 < 100){ // 10% probability
-                logger.messageOut(msg) << "Injecting packet error.";
+                logger.messageOut(msg, src) << "Injecting packet error.";
                 packet.injectErrors(1); // bit flip
             }
         }
         try{
             bool s = (sock->writeData((char*)packet.data, packet.size) == packet.size);
             s = s && sock->sendEOF();
+            logger.messageOut(msg, src) << "Sent. Body: " << msg.payload.data;
             if(!s)
                 return 3;
             if(!sock->isReadClosed()){
@@ -294,16 +295,16 @@ private:
                 if(sock->readMsg(response)){
                     switch(response){
                         case 0: // message accepted
-                            logger.messageOut(msg) << "Sent.";
+                            logger.messageOut(msg, src) << "Receiver sucessfully got message.";
                         break;
                         case 1: // unknown packet type
                         {
-                            logger.messageOut(msg) << "Receiver reports packet unrecognized.";
+                            logger.messageOut(msg, src) << "Receiver reports packet unrecognized.";
                         }
                         break;
                         case 2: // data integrity error
                         {
-                            logger.messageOut(msg) << "Receivier reports packet corrupted. Retrying...";
+                            logger.messageOut(msg, src) << "Receivier reports packet corrupted. Retrying...";
                             return 2;
                         }
                         break;
@@ -316,7 +317,7 @@ private:
             }
             return 0;
         }catch(std::exception& ex){
-            logger.messageOut(msg) << "Erorr during packet transfer to dest: " << ex.what();
+            logger.messageOut(msg, src) << "Erorr during packet transfer to dest: " << ex.what();
             return 3;
         }
         return 0;
@@ -332,12 +333,12 @@ private:
         try{
             sock = client.connect();
             if(sock){
-                result = tryToSend(sock, item.second);
+                result = tryToSend(sock, item.second, item.first);
                 delete sock;
                 sock = NULL;
             }
         }catch(std::exception& ex){
-            logger.messageOut(item.second) << "Connection to dest failed: " << ex.what();
+            logger.messageOut(item.second, item.first) << "Connection to dest failed: " << ex.what();
             if(sock)
                 delete sock;
         }
@@ -555,9 +556,9 @@ public:
                 _sendLSA_Ack(message.routerID, seqNum);
 
                 // ignore duplicates (handle cycles in network)
-                if (lastSeqNums.count(advertisingRID) && lastSeqNums[advertisingRID] <= seqNum) {
+                if (lastSeqNums.count(advertisingRID) && lastSeqNums[advertisingRID] >= seqNum) {
                     logger.messageIn(message) << "Got duplicate LSA (current version: "
-                        << lastSeqNums[advertisingRID] << "). Ignoring." << std::endl;
+                        << lastSeqNums[advertisingRID] << "). Ignoring.";
                     return;
                 } else {
                     lastSeqNums[advertisingRID] = seqNum;
@@ -1067,7 +1068,7 @@ private:
         int response = 0;
         if(rmsg.readFrom(&item.buffer)){
             if(handlers.find(rmsg.packetType)!=handlers.end()){
-                logger.messageIn(rmsg) << "Body: " << rmsg.payload.data;
+                logger.messageIn(rmsg) << "Received. Body: " << rmsg.payload.data;
                 (*handlers[rmsg.packetType])(rmsg, item.socket);
                 response = 0;
             } else {
