@@ -154,7 +154,7 @@ typedef std::map<std::pair<unsigned long, routerId>, std::pair<std::shared_ptr<R
 struct LocalLink {
 public:
     LocalLink()
-        : dest(""), cost(0), helloInt(0), updateInt(0), pingsPerSec(0), state(NEW) {}
+        : dest(""), cost(0), helloInt(0), updateInt(0), pingsPerInt(1), state(NEW) {}
     LocalLink(const routerId& rid,
               double cost,
               unsigned long hello,
@@ -163,14 +163,14 @@ public:
           cost(cost),
           helloInt(hello),
           updateInt(update),
-          pingsPerSec(0),
+          pingsPerInt(1),
           state(NEW) {}
 
     routerId dest;
     double cost;
     unsigned long helloInt;
     unsigned long updateInt;
-    unsigned long pingsPerSec;
+    unsigned long pingsPerInt;
     linkState state;
     Stopwatch helloInterval, helloSent;
     Stopwatch updateInterval, updateSent;
@@ -289,7 +289,8 @@ private:
         try{
             bool s = (sock->writeData((char*)packet.data, packet.size) == packet.size);
             s = s && sock->sendEOF();
-            logger.messageOut(msg, src) << "Sent. Body: " << msg.payload.data;
+            unsigned char* body = (msg.payload.size) ? msg.payload.data : ((unsigned char*)"No Body");
+            logger.messageOut(msg, src) << "Sent. Body: " <<  body;
             if(!s)
                 return 3;
             if(!sock->isReadClosed()){
@@ -353,26 +354,6 @@ private:
 };
 
 std::shared_ptr<MessagePusher> thisMessagePusher;
-
-class LinkCostThread : public WorkerService<std::string> {
-private:
-    void executeTask(std::string& item){
-        LocalLink& link = localLinks[item];
-
-        // check if still within poll interval
-        if (link.updateSent.elapsed() > 1000) {
-            return;
-        }
-
-        // send a new message out
-        RouterMessage msg;
-        msg.routerID = thisTable->getThis();
-        msg.packetType = MessageType::LinkCostPing;
-        thisMessagePusher->schedule(MessageToPush(link.dest, msg));
-    }
-    
-    void intervalTasks() override {}
-} linkCostSender;
 
 void _sendLSA() {
     logger << "Broadcasting LSA.";
@@ -592,10 +573,6 @@ public:
                     logger.messageIn(message) << "Couldn't parse LSA message header. Ignoring.";
                     return;
                 }
-                if (advertisingRID == thisTable->getThis()) {
-                    logger.messageIn(message) << "Got LSA with self as advertising router. Ignoring.";
-                    return;
-                }
                 std::string linkID;
                 routerId linkDest;
                 double linkCost;
@@ -610,6 +587,11 @@ public:
 
                 // ack
                 _sendLSA_Ack(message.routerID, seqNum);
+
+                if (advertisingRID == thisTable->getThis()) {
+                    logger.messageIn(message) << "Got LSA with self as advertising router. Ignoring.";
+                    return;
+                }
 
                 // ignore duplicates (handle cycles in network)
                 if (lastSeqNums.count(advertisingRID) && lastSeqNums[advertisingRID] >= seqNum) {
@@ -845,11 +827,17 @@ public:
             void operator()(RouterMessage& message, TcpSocket* socket){
                 for (auto& ll : localLinks) {
                     if (ll.second.dest == message.routerID) {
-                        if (ll.second.updateSent.elapsed() > 1000) {
+                        // check if still within poll interval
+                        if (ll.second.updateSent.elapsed() > 20) {
                             return;
                         }
-                        ll.second.pingsPerSec++;
-                        linkCostSender.schedule(ll.second.dest);
+                        ll.second.pingsPerInt++;
+
+                        // send a new message out
+                        RouterMessage msg;
+                        msg.routerID = thisTable->getThis();
+                        msg.packetType = MessageType::LinkCostPing;
+                        thisMessagePusher->schedule(MessageToPush(ll.second.dest, msg));
                         return;
                     }
                 }
@@ -1025,7 +1013,7 @@ private:
             case ALIVE:
                 for (auto lsaItr = link.pending_LSAs.begin(); lsaItr != link.pending_LSAs.end(); ++lsaItr) {
                     if (lsaItr->second.second->elapsed() > 1000) {
-                        std::cout << "Retransmitting unACK'd LSA message." << std::endl;
+                        logger << "Retransmitting unACK'd LSA message.";
                         lsaItr->second.second->start();
                         thisMessagePusher->schedule(MessageToPush(lsaItr->first.second, *(lsaItr->second.first)));
                     }
@@ -1045,13 +1033,18 @@ private:
                     logger << "Starting to measure link " << ll.first << "'s cost for 1 second.";
                     link.state = COST_UPDATE;
                     link.updateSent.start();
-                    linkCostSender.schedule(link.dest);
+
+                    // send a new message out
+                    RouterMessage msg;
+                    msg.routerID = thisTable->getThis();
+                    msg.packetType = MessageType::LinkCostPing;
+                    thisMessagePusher->schedule(MessageToPush(link.dest, msg));
                 }
                 break;
             case COST_UPDATE:
-                if (link.updateSent.elapsed() > 1000) {
+                if (link.updateSent.elapsed() > 20) {
                     // Move it back to ALIVE, or DEAD if got no pings
-                    if (link.pingsPerSec == 0) {
+                    if (link.pingsPerInt == 0) {
                         logger << "While testing cost, found that link " << ll.first
                             << " is dead. Clearing link and scheduling retry.";
                         link.state = DEAD;
@@ -1068,17 +1061,26 @@ private:
                     unsigned long maxPPS = 0;
                     for (auto& lItr : localLinks) {
                         if (lItr.second.state == ALIVE) {
-                            maxPPS = std::max(lItr.second.pingsPerSec, maxPPS);
+                            maxPPS = std::max(lItr.second.pingsPerInt, maxPPS);
                         }
                     }
-                    link.cost = (1.0 * maxPPS) / link.pingsPerSec;
+                    linkList newLinkCosts;
                     for (auto& lItr : localLinks) {
                         if (lItr.second.state == ALIVE) {
-                            lItr.second.cost = (1.0 * maxPPS) / lItr.second.pingsPerSec;
+                            lItr.second.cost = (1.0 * maxPPS) / lItr.second.pingsPerInt;
+                            newLinkCosts.push_back(linkWeight(lItr.second.dest, lItr.second.cost));
+                            logger << "Updated cost for link " << lItr.first
+                                << " as " << lItr.second.cost;
                         }
                     }
-                    logger << "Calculated new cost for link " << ll.first
-                        << " as " << link.cost << ". Sending a new LSA.";
+
+                    // update our graph & paths
+                    tableMonitor.lock();
+                    thisTable->updateLinks(thisTable->getThis(), newLinkCosts);
+                    logger << "DEBUG Network Graph:\n" << thisTable->printGraph();
+                    tableMonitor.unlock();
+
+                    logger << "Sending LSA for updated costs.";
                     _sendLSA();
 
                     link.updateInterval.start();
@@ -1174,7 +1176,8 @@ private:
         int response = 0;
         if(rmsg.readFrom(&item.buffer)){
             if(handlers.find(rmsg.packetType)!=handlers.end()){
-                logger.messageIn(rmsg) << "Received. Body: " << rmsg.payload.data;
+                unsigned char* body = (rmsg.payload.size) ? rmsg.payload.data : ((unsigned char*)"No Body");
+                logger.messageIn(rmsg) << "Received. Body: " << body;
                 (*handlers[rmsg.packetType])(rmsg, item.socket);
                 response = 0;
             } else {
