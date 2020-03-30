@@ -637,6 +637,7 @@ public:
 
                     RouterMessage rmsg = message;
                     rmsg.routerID = thisTable->getThis();
+					rmsg.addSessionID(sessionID);
                     routerId dest = thisTable->nextHop(destination);
                     thisMessagePusher->schedule(MessageToPush(dest, rmsg));
                     return;
@@ -701,6 +702,7 @@ public:
 
                     RouterMessage rmsg = message;
                     rmsg.routerID = thisTable->getThis();
+					rmsg.addSessionID(sessionID);
                     routerId dest = thisTable->nextHop(destination);
                     thisMessagePusher->schedule(MessageToPush(dest, rmsg));
                     return;
@@ -887,6 +889,7 @@ public:
                     logger.messageIn(message) << "Routing FileInit_Response message";
                     RouterMessage rmsg = message;
                     rmsg.routerID = thisTable->getThis();
+					rmsg.addSessionID(sessionID);
                     routerId dest = thisTable->nextHop(destination);
                     thisMessagePusher->schedule(MessageToPush(dest, rmsg));
                     return;
@@ -924,6 +927,7 @@ public:
                     logger.messageIn(message) << "Routing FileChunk_Response message";
                     RouterMessage rmsg = message;
                     rmsg.routerID = thisTable->getThis();
+					rmsg.addSessionID(sessionID);
                     routerId dest = thisTable->nextHop(destination);
                     thisMessagePusher->schedule(MessageToPush(dest, rmsg));
                     return;
