@@ -276,15 +276,9 @@ private:
         // returns 2 for corruption response
         // returns 3 for error
         Buffer packet = msg.getPacket();
-        if(_corruptMsgs){
-            if(rand()%1000 < 50){ // 5% probability
-                logger.messageOut(msg, src) << "Simulating lost packet.";
-                return 1; // lost packet
-            }
-            if(rand()%1000 < 100){ // 10% probability
-                logger.messageOut(msg, src) << "Injecting packet error.";
-                packet.injectErrors(1); // bit flip
-            }
+        if(_corruptMsgs && rand()%1000 < 100){ // 10% probability
+			logger.messageOut(msg, src) << "Injecting packet error.";
+			packet.injectErrors(1); // bit flip
         }
         try{
             bool s = (sock->writeData((char*)packet.data, packet.size) == packet.size);
@@ -334,6 +328,10 @@ private:
         TcpSocket* sock = NULL;
         int result = 3;
         try{
+			if(_corruptMsgs && rand()%1000 < 50){ // 5% probability
+                logger.messageOut(item.second, item.first) << "Simulating lost packet.";
+                return; // lost packet
+            }
             sock = client.connect();
             if(sock){
                 result = tryToSend(sock, item.second, item.first);
@@ -1512,7 +1510,7 @@ int main(int args, char** argv){
         homeDirectory.append("/");
     }
 
-    UI ui{routerIP, port, false};
+    UI ui{routerIP, port, corruptMsgs};
     if (!linkFile.empty())
         ui.loadLinks(linkFile);
     if (autoStart)
