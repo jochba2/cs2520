@@ -21,6 +21,10 @@ Message/Packetization | Evangelos
 Common Datastructures | Evangelos
 Final Report | Evangelos/Joe
 
+## Docs
+
+The final report and [initial report](docs/Initial_Design_Report.pdf) can be found under the `docs/` section in this repo.
+
 
 ## Getting Started
 
