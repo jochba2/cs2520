@@ -3,6 +3,25 @@
 * **Joe Baker** - jcb116@pitt.edu
 * **Evangelos Karageorgos** - karageorgos@pitt.edu
 
+## Contributions
+
+Work Item | Student
+----------|--------
+Design Report | Joe
+README/User Manual | Joe
+Docker Deployment | Joe
+CLI/UI Thread | Joe
+Link Map, Djikstra's (table.hpp) | Joe
+BeNeighbor, Alive, Cost Message Handlers | Joe
+LSA Message Handlers | Joe
+Logging | Joe
+TCP Connections | Evangelos
+Background Thread Infrastructure | Evangelos
+Message/Packetization | Evangelos
+Common Datastructures | Evangelos
+Final Report | Evangelos/Joe
+
+
 ## Getting Started
 
 These instructions will get you a copy of the project up and running on your local machine for development and testing purposes. See deployment for notes on how to deploy the project on a live system.
@@ -62,7 +81,7 @@ Notes:
 * Hit enter once after the attach command to get the CLI prompt up
 * From inside the routed prompt, use `ctl-p ctl-q` to detach back to your shell
 
-####
+#### Linux
 
 Deploying this on a standalone Linux system is supported but not recommended. You will need a modern gcc compiler. From the root of the project:
 
@@ -89,14 +108,14 @@ The `./topo` directory contains two sample network topologies, small and large. 
 
 ### docker-compose.yml
 
-We provide two sample compose files, `docker-compose-small.yml` and `docker-compose-large.yml` for easy deployment when testing. Each compose file corresponds to the sample topologies above.
+We provide two sample compose files, `docker-compose-small.yml` and `docker-compose-large.yml` for easy deployment when testing. Each compose file corresponds to the sample topologies above. Running these files will create directories that the containers will use to write logs files out to and use to send files between routers.
 
 The files can be customized if you want to change any parameters that go into the starting command for the router, but those changes shouldn't be necessary. The easiest way to add new routers to the deployment is to add an entry under the `services:` section and edit these parts:
 
 * Change `XYZ` to the last digits of an IPv4 address for your router
 * Update `volumes->source` for log and file hosting directories on your machine
 
-```
+```yaml
   routed_XYZ:
     build: .
     stdin_open: true
