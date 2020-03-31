@@ -74,7 +74,7 @@ CLI Usage:
 routed>
 ```
 
-You can use the router menu to monitor messages sent/received on this node, send files, and make live changes to the router. Type `routed> help <cmd` for usage on specific commands.
+You can use the router menu to monitor messages sent/received on this node, send files, and make live changes to the router. Type `help <cmd>` for usage on specific commands.
 
 Notes:
 
