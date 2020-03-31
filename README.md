@@ -108,11 +108,11 @@ You can set the details of links for a router before it starts running but not a
 ...
 ```
 
-The `./topo` directory contains two sample network topologies, small and large. Small is a 3 vertex graph with various weights and is sufficient to demonstrate all features of our project. Large is a 6 vertex bipartite graph that demonstrates that the implementation works at larger scales.
+The [/topo](topo) directory contains two sample network topologies, small and large. Small is a 3 vertex graph with various weights and is sufficient to demonstrate all features of our project. Large is a 6 vertex bipartite graph that demonstrates that the implementation works at larger scales.
 
 ### docker-compose.yml
 
-We provide two sample compose files, `docker-compose-small.yml` and `docker-compose-large.yml` for easy deployment when testing. Each compose file corresponds to the sample topologies above. Running these files will create directories that the containers will use to write logs files out to and use to send files between routers.
+We provide two sample compose files, [docker-compose-small.yml](docker-compose-small.yml) and [docker-compose-large.yml](docker-compose-large.yml) for easy deployment when testing. Each compose file corresponds to the sample topologies above. Running these files will create directories that the containers will use to write logs files out to and use to send files between routers.
 
 The files can be customized if you want to change any parameters that go into the starting command for the router, but those changes shouldn't be necessary. The easiest way to add new routers to the deployment is to add an entry under the `services:` section and edit these parts:
 
