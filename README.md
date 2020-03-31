@@ -136,7 +136,7 @@ The files can be customized if you want to change any parameters that go into th
         source: ./<path_from_root_of_project_on_your_pc_to_log_output_dir>
         target: /logs
       - type: bind
-        source: ./<path_from_root_of_project_on_your_pc_to_file_hosting_dir>/XXX
+        source: ./<path_from_root_of_project_on_your_pc_to_file_hosting_dir>/XYZ
         target: /files
  ```
  
